@@ -1,0 +1,6 @@
+{
+  "name": "Aviator Crash Multiplier",
+  "description": "Jeu de crash en ligne AeroCrash avec système d'authentification complet, gestion sécurisée des sessions, persistance du solde FCFA et historique individuel des utilisateurs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

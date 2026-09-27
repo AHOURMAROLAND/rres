@@ -1,0 +1,124 @@
+{
+  "users": [
+    {
+      "id": "usr_muadp1pco4oi",
+      "name": "Amadou Test",
+      "email": "amadou.test@gmail.com",
+      "password": "$2b$10$/K5u5v8nhYzloYP5WS6VPOFS3kROVxXGoYfruabcQQ1qo3SPpj0pm",
+      "country": "Côte d'Ivoire",
+      "balance": 0,
+      "isActivated": false,
+      "createdAt": "2026-09-20T22:19:05.569Z",
+      "updatedAt": "2026-09-20T22:19:05.569Z",
+      "bets": [],
+      "transactions": []
+    },
+    {
+      "id": "usr_muaeeshk2rz3",
+      "name": "Test Pilote",
+      "email": "pilote.expert@test.com",
+      "password": "$2b$10$OP9bPjYFWvXhaOGOuoF56OOMIvvPZ/NMGktkJLh3/Q6W1RRuz25U6",
+      "country": "Côte d'Ivoire",
+      "balance": 0,
+      "isActivated": false,
+      "createdAt": "2026-09-20T22:39:06.680Z",
+      "updatedAt": "2026-09-20T22:39:06.680Z",
+      "bets": [],
+      "transactions": []
+    },
+    {
+      "id": "usr_muaeey73qk6j",
+      "name": "Pilote Netlify",
+      "email": "pilote.netlify@test.com",
+      "password": "$2b$10$JEhZitdIiowU26neRjIN3.bL/msp9is8gTBtXWyq9mG6HTjSmjo..",
+      "country": "Sénégal",
+      "balance": 0,
+      "isActivated": false,
+      "createdAt": "2026-09-20T22:39:14.079Z",
+      "updatedAt": "2026-09-20T22:39:14.079Z",
+      "bets": [],
+      "transactions": []
+    },
+    {
+      "id": "usr_muaefgyxlue9",
+      "name": "Aero Pilot 2026",
+      "email": "aeropilot2026@test.com",
+      "password": "$2b$10$vatBrklSv4hxWo8ZHfiFB.XSBuxkzc7S56LE9shms.hNR6pFlMW2C",
+      "country": "Mali",
+      "balance": 0,
+      "isActivated": false,
+      "createdAt": "2026-09-20T22:39:38.409Z",
+      "updatedAt": "2026-09-20T22:39:38.409Z",
+      "bets": [],
+      "transactions": []
+    },
+    {
+      "id": "usr_muaeiqcus6zz",
+      "name": "hihy",
+      "email": "elmanu@gmail.com",
+      "password": "$2b$10$YG3oJtVGeIC2mIOOzVwZo.EKuagOUJswfGG3TSdgsDmCPs6qoTdFy",
+      "country": "Togo",
+      "balance": 1000,
+      "isActivated": true,
+      "createdAt": "2026-09-20T22:42:10.542Z",
+      "updatedAt": "2026-09-20T22:43:59.582Z",
+      "bets": [],
+      "transactions": [
+        {
+          "id": "tx_wdr_1789944239152",
+          "userId": "usr_muaeiqcus6zz",
+          "type": "withdraw",
+          "amount": 2000,
+          "method": "wave",
+          "reference": "WDR-740090",
+          "status": "success",
+          "timestamp": 1789944239152
+        },
+        {
+          "id": "tx_wth_1dge7nk",
+          "userId": "usr_muaeiqcus6zz",
+          "type": "withdraw",
+          "amount": 2000,
+          "method": "wave",
+          "phone": "07 48 92 10 33",
+          "reference": "RET-237086",
+          "status": "success",
+          "timestamp": 1789944237086
+        },
+        {
+          "id": "tx_act_d6r038a",
+          "userId": "usr_muaeiqcus6zz",
+          "type": "activation",
+          "amount": 2000,
+          "method": "wave",
+          "reference": "ACT-182403",
+          "status": "success",
+          "timestamp": 1789944182403
+        },
+        {
+          "id": "tx_act_w1e2x1d",
+          "userId": "usr_muaeiqcus6zz",
+          "type": "activation",
+          "amount": 2000,
+          "method": "wave",
+          "reference": "ACT-182767",
+          "status": "success",
+          "timestamp": 1789944182767
+        }
+      ]
+    },
+    {
+      "id": "usr_muaf12s5p8ft",
+      "name": "Pilot Check",
+      "email": "pilot.check.1789944986@test.com",
+      "password": "$2b$10$afuKXAr0GFs1vl.piBreoe.HBF57DkXfNWUYkI3TEEZfh8jT8Lmia",
+      "country": "Côte d'Ivoire",
+      "balance": 0,
+      "isActivated": false,
+      "createdAt": "2026-09-20T22:56:26.453Z",
+      "updatedAt": "2026-09-20T22:56:26.453Z",
+      "bets": [],
+      "transactions": []
+    }
+  ]
+}

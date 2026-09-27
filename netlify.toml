@@ -1,0 +1,83 @@
+[build]
+  publish = "dist"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+
+# Redirects: point API requests directly to Netlify Functions
+[[redirects]]
+  from = "/api/register"
+  to = "/.netlify/functions/register"
+  status = 200
+
+[[redirects]]
+  from = "/api/auth/register"
+  to = "/.netlify/functions/register"
+  status = 200
+
+[[redirects]]
+  from = "/api/login"
+  to = "/.netlify/functions/login"
+  status = 200
+
+[[redirects]]
+  from = "/api/auth/login"
+  to = "/.netlify/functions/login"
+  status = 200
+
+[[redirects]]
+  from = "/api/me"
+  to = "/.netlify/functions/me"
+  status = 200
+
+[[redirects]]
+  from = "/api/auth/me"
+  to = "/.netlify/functions/me"
+  status = 200
+
+[[redirects]]
+  from = "/api/user/balance"
+  to = "/.netlify/functions/balance"
+  status = 200
+
+[[redirects]]
+  from = "/api/user/deposit"
+  to = "/.netlify/functions/deposit"
+  status = 200
+
+[[redirects]]
+  from = "/api/deposit"
+  to = "/.netlify/functions/deposit"
+  status = 200
+
+[[redirects]]
+  from = "/api/user/withdraw"
+  to = "/.netlify/functions/withdraw"
+  status = 200
+
+[[redirects]]
+  from = "/api/withdraw"
+  to = "/.netlify/functions/withdraw"
+  status = 200
+
+[[redirects]]
+  from = "/api/user/bets"
+  to = "/.netlify/functions/bets"
+  status = 200
+
+[[redirects]]
+  from = "/api/user/transactions"
+  to = "/.netlify/functions/transactions"
+  status = 200
+
+[[redirects]]
+  from = "/api/user/activate"
+  to = "/.netlify/functions/activate"
+  status = 200
+
+# Single-Page Application (SPA) Fallback
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

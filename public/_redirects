@@ -1,0 +1,5 @@
+/api/register /.netlify/functions/register 200
+/api/auth/register /.netlify/functions/register 200
+/api/login /.netlify/functions/login 200
+/api/auth/login /.netlify/functions/login 200
+/* /index.html 200
