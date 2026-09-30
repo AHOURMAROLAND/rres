@@ -9,10 +9,13 @@
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "db:init": "tsx server/scripts/init-db.ts",
+    "whitelist-ip": "tsx server/scripts/whitelist-ip.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
+    "@neondatabase/serverless": "^1.1.0",
     "@supabase/supabase-js": "^2.116.0",
     "@tailwindcss/vite": "^4.3.3",
     "@vitejs/plugin-react": "^6.1.1",

@@ -119,4 +119,34 @@ export class UserDatabase {
       this.writeDB(db);
     }
   }
+
+  public static findBySaspayPaymentId(paymentId: string): { user: DbUser; transaction: any } | null {
+    const db = this.readDB();
+    for (const u of db.users) {
+      if (u.transactions) {
+        const tx = u.transactions.find((t: any) => t.saspayPaymentId === paymentId || t.id === paymentId || t.reference === paymentId);
+        if (tx) {
+          return { user: u, transaction: tx };
+        }
+      }
+    }
+    return null;
+  }
+
+  public static updateTransaction(userId: string, txIdOrSaspayId: string, updates: any): DbUser | null {
+    const db = this.readDB();
+    const user = db.users.find((u) => u.id === userId);
+    if (!user || !user.transactions) return null;
+
+    const txIndex = user.transactions.findIndex((t: any) => t.id === txIdOrSaspayId || t.saspayPaymentId === txIdOrSaspayId);
+    if (txIndex === -1) return null;
+
+    user.transactions[txIndex] = {
+      ...user.transactions[txIndex],
+      ...updates,
+    };
+    user.updatedAt = new Date().toISOString();
+    this.writeDB(db);
+    return user;
+  }
 }

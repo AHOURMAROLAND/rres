@@ -76,6 +76,21 @@
   to = "/.netlify/functions/activate"
   status = 200
 
+[[redirects]]
+  from = "/api/user/payment-status"
+  to = "/.netlify/functions/payment-status"
+  status = 200
+
+[[redirects]]
+  from = "/api/user/payment-status/*"
+  to = "/.netlify/functions/payment-status"
+  status = 200
+
+[[redirects]]
+  from = "/api/webhook/saspay"
+  to = "/.netlify/functions/webhook-saspay"
+  status = 200
+
 # Single-Page Application (SPA) Fallback
 [[redirects]]
   from = "/*"

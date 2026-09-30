@@ -64,7 +64,7 @@ export const ProvablyFairModal: React.FC<ProvablyFairModalProps> = ({
               <span>Pourquoi ce jeu est infalsifiable ?</span>
             </div>
             <p className="text-slate-400">
-              Le résultat de chaque manche est déterminé avant même que l'avion ne décolle grâce à la combinaison d'une <strong>graine serveur (Server Seed)</strong> chiffrée en SHA-256 et de votre <strong>graine joueur (Client Seed)</strong>. Ni le joueur ni la plateforme ne peuvent modifier le multiplicateur en cours de vol.
+              Le résultat de chaque manche est déterminé avant même que l'avion ne décolle grâce au calcul <strong>HMAC_SHA256(ServerSeed, ClientSeed + ":" + Nonce)</strong> conforme aux standards cryptographiques. La graine serveur est publiée sous forme de hash SHA-256 avant chaque tour. L'avantage maison est fixé à <strong>3%</strong>. Ni le joueur ni la plateforme ne peuvent modifier le multiplicateur en cours de vol.
             </p>
           </div>
 

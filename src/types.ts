@@ -13,7 +13,19 @@ export interface User {
   createdAt: number;
 }
 
-export type PaymentMethod = 'wave' | 'orange_money' | 'mtn' | 'moov' | 'card';
+export type PaymentMethod =
+  | 'wave'
+  | 'orange_money'
+  | 'mtn'
+  | 'moov'
+  | 'celtiis'
+  | 'freemoney'
+  | 'wizall'
+  | 'togocel'
+  | 'airtel'
+  | 'vodacom'
+  | 'card'
+  | 'crypto';
 
 export interface PaymentTransaction {
   id: string;
@@ -25,6 +37,8 @@ export interface PaymentTransaction {
   reference: string;
   status: 'pending' | 'success' | 'failed';
   timestamp: number;
+  saspayPaymentId?: string;
+  checkoutUrl?: string;
 }
 
 export type GameMode = 'real' | 'demo';

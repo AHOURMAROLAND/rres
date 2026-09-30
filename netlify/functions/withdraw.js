@@ -1,4 +1,4 @@
-// Netlify Serverless Function for Withdrawals
+// Netlify Serverless Function for Withdrawals (with SasPay integration)
 // Handles POST requests to /.netlify/functions/withdraw
 const {
   findById,
@@ -8,6 +8,10 @@ const {
   verifyToken,
   corsHeaders,
 } = require('./db');
+const {
+  isSaspayConfigured,
+  createSaspayPayout,
+} = require('./saspay');
 
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {
@@ -45,7 +49,7 @@ exports.handler = async (event) => {
     }
 
     const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body || {});
-    const { amount, method = 'wave', phone } = body;
+    const { amount, method = 'wave', phone, country } = body;
     const numAmount = Number(amount);
 
     if (!numAmount || isNaN(numAmount) || numAmount < 1000) {
@@ -64,20 +68,90 @@ exports.handler = async (event) => {
       };
     }
 
+    const cleanPhone = (phone || user.email || '').toString().trim();
+    const txId = 'tx_wth_' + Date.now();
+    const reference = 'RET-' + Math.floor(100000 + Math.random() * 900000);
+
+    // 1. If SasPay is configured, initiate payout
+    if (isSaspayConfigured()) {
+      try {
+        const payoutRes = await createSaspayPayout({
+          amount: numAmount,
+          country: country || user.country || 'CI',
+          method,
+          phone: cleanPhone,
+          customer: {
+            phone: cleanPhone,
+            first_name: user.name ? user.name.split(' ')[0] : 'Gagnant',
+            last_name: user.name ? user.name.split(' ').slice(1).join(' ') : 'AeroCrash',
+            email: user.email,
+          },
+          description: `Retrait gains AeroCrash ${numAmount.toLocaleString('fr-FR')} FCFA`,
+        });
+
+        if (!payoutRes.success) {
+          return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({
+              success: false,
+              message: payoutRes.message || 'Échec de l\'envoi du retrait via SasPay.',
+            }),
+          };
+        }
+
+        const newBalance = Math.round((user.balance - numAmount) * 100) / 100;
+        const updatedUser = updateUser(decoded.id, { balance: newBalance });
+
+        const tx = {
+          id: txId,
+          userId: decoded.id,
+          type: 'withdraw',
+          amount: numAmount,
+          method,
+          phone: cleanPhone,
+          reference,
+          status: 'pending',
+          timestamp: Date.now(),
+          saspayPayoutId: payoutRes.payoutId,
+        };
+        addTransaction(decoded.id, tx);
+
+        return {
+          statusCode: 200,
+          headers: corsHeaders,
+          body: JSON.stringify({
+            success: true,
+            message: `Demande de retrait de ${numAmount.toLocaleString('fr-FR')} FCFA transférée vers votre compte Mobile Money.`,
+            balance: newBalance,
+            user: sanitizeUser(updatedUser),
+            transaction: tx,
+          }),
+        };
+      } catch (err) {
+        console.error('SasPay payout error in Netlify:', err);
+        return {
+          statusCode: 500,
+          headers: corsHeaders,
+          body: JSON.stringify({ success: false, message: 'Erreur lors du traitement du retrait SasPay.' }),
+        };
+      }
+    }
+
+    // 2. Offline simulation fallback
     const newBalance = Math.round((user.balance - numAmount) * 100) / 100;
     const updatedUser = updateUser(decoded.id, { balance: newBalance });
 
     const tx = {
-      id: 'tx_wth_' + Date.now(),
+      id: txId,
       type: 'withdraw',
       amount: numAmount,
       method,
-      phone: phone || '',
-      reference: 'RET-' + Math.floor(100000 + Math.random() * 900000),
+      phone: cleanPhone,
+      reference,
       status: 'success',
       timestamp: Date.now(),
     };
-
     addTransaction(decoded.id, tx);
 
     return {

@@ -119,6 +119,67 @@
       "updatedAt": "2026-09-20T22:56:26.453Z",
       "bets": [],
       "transactions": []
+    },
+    {
+      "id": "usr_mun9vfy89t3a",
+      "name": "Testeur Sim",
+      "email": "sim_user_1881000300@example.com",
+      "password": "$2b$10$vgJDmoxfg16Ara55pFZfau/kdgs0OZkkCsMu5ByLABNwCO1uifyYa",
+      "country": "CI",
+      "balance": 3000,
+      "isActivated": true,
+      "createdAt": "2026-09-29T22:53:05.792Z",
+      "updatedAt": "2026-09-29T22:53:10.046Z",
+      "bets": [],
+      "transactions": [
+        {
+          "id": "tx_wth_z35arla",
+          "userId": "usr_mun9vfy89t3a",
+          "type": "withdraw",
+          "amount": 2000,
+          "method": "orange_money",
+          "phone": "0701020304",
+          "reference": "RET-390041",
+          "status": "success",
+          "timestamp": 1790722390043
+        },
+        {
+          "id": "tx_dep_auut87n",
+          "userId": "usr_mun9vfy89t3a",
+          "type": "deposit",
+          "amount": 5000,
+          "method": "wave",
+          "phone": "0701020304",
+          "reference": "DEP-387947",
+          "status": "success",
+          "timestamp": 1790722387951
+        }
+      ]
+    },
+    {
+      "id": "usr_mun9xfhru0kx",
+      "name": "roland",
+      "email": "admin@kotizo.app",
+      "password": "$2b$10$9rEyzjmITL1S.idb1LzemuK4tBlozxwok/rLJJyc/aY1EGwALTThe",
+      "country": "Togo",
+      "balance": 200,
+      "isActivated": true,
+      "createdAt": "2026-09-29T22:54:38.511Z",
+      "updatedAt": "2026-09-29T22:56:55.352Z",
+      "bets": [],
+      "transactions": [
+        {
+          "id": "tx_dep_afo57il",
+          "userId": "usr_mun9xfhru0kx",
+          "type": "deposit",
+          "amount": 1000,
+          "method": "wave",
+          "phone": "90 94 04 02",
+          "reference": "DEP-523698",
+          "status": "success",
+          "timestamp": 1790722523711
+        }
+      ]
     }
   ]
 }

@@ -108,6 +108,36 @@ function addTransaction(userId, tx) {
   }
 }
 
+function findBySaspayPaymentId(paymentId) {
+  const db = readDB();
+  for (const u of db.users) {
+    if (u.transactions) {
+      const tx = u.transactions.find((t) => t.saspayPaymentId === paymentId || t.id === paymentId || t.reference === paymentId);
+      if (tx) {
+        return { user: u, transaction: tx };
+      }
+    }
+  }
+  return null;
+}
+
+function updateTransaction(userId, txIdOrSaspayId, updates) {
+  const db = readDB();
+  const user = db.users.find((u) => u.id === userId);
+  if (!user || !user.transactions) return null;
+
+  const txIndex = user.transactions.findIndex((t) => t.id === txIdOrSaspayId || t.saspayPaymentId === txIdOrSaspayId);
+  if (txIndex === -1) return null;
+
+  user.transactions[txIndex] = {
+    ...user.transactions[txIndex],
+    ...updates,
+  };
+  user.updatedAt = new Date().toISOString();
+  writeDB(db);
+  return user;
+}
+
 function sanitizeUser(user) {
   if (!user) return null;
   const { password, ...safe } = user;
@@ -158,6 +188,8 @@ module.exports = {
   updateUser,
   addBet,
   addTransaction,
+  findBySaspayPaymentId,
+  updateTransaction,
   sanitizeUser,
   generateToken,
   verifyToken,

@@ -488,9 +488,19 @@ export class AuthApi {
   }
 
   /**
-   * Deposit real money (Mandatory to unlock playing)
+   * Deposit money via SasPay or simulated provider (Mandatory to unlock real play)
    */
-  public static async deposit(amount: number, method = 'wave', phone?: string): Promise<{ success: boolean; balance?: number; user?: User; message?: string }> {
+  public static async deposit(amount: number, method = 'wave', phone?: string, country?: string, otp?: string): Promise<{
+    success: boolean;
+    pending?: boolean;
+    paymentId?: string;
+    checkoutUrl?: string;
+    instructions?: string;
+    balance?: number;
+    user?: User;
+    message?: string;
+    transaction?: any;
+  }> {
     const token = this.getToken();
     if (!token) return { success: false, message: 'Non connecté' };
 
@@ -500,7 +510,7 @@ export class AuthApi {
       const res = await fetch(`${baseUrl}/.netlify/functions/deposit`, {
         method: 'POST',
         headers: this.getHeaders(),
-        body: JSON.stringify({ amount, method, phone }),
+        body: JSON.stringify({ amount, method, phone, country, otp }),
       });
       const { data } = await parseResponseSafely(res);
       return data || { success: false, message: 'Erreur lors du dépôt.' };
@@ -510,9 +520,32 @@ export class AuthApi {
   }
 
   /**
+   * Verify SasPay payment status in real time
+   */
+  public static async checkPaymentStatus(paymentId: string): Promise<{
+    success: boolean;
+    status: 'SUCCESS' | 'PENDING' | 'FAILED' | 'CANCELLED' | string;
+    balance?: number;
+    user?: User;
+    message?: string;
+  }> {
+    const baseUrl = getApiBaseUrl();
+
+    try {
+      const res = await fetch(`${baseUrl}/.netlify/functions/payment-status?paymentId=${encodeURIComponent(paymentId)}`, {
+        headers: this.getHeaders(),
+      });
+      const { data } = await parseResponseSafely(res);
+      return data || { success: false, status: 'FAILED', message: 'Erreur vérification statut.' };
+    } catch {
+      return { success: false, status: 'FAILED', message: 'Erreur réseau vérification statut.' };
+    }
+  }
+
+  /**
    * Withdraw funds
    */
-  public static async withdraw(amount: number, method = 'wave', phone?: string): Promise<{ success: boolean; balance?: number; user?: User; message?: string }> {
+  public static async withdraw(amount: number, method = 'wave', phone?: string, country?: string): Promise<{ success: boolean; balance?: number; user?: User; message?: string; transaction?: any }> {
     const token = this.getToken();
     if (!token) return { success: false, message: 'Non connecté' };
 
@@ -522,7 +555,7 @@ export class AuthApi {
       const res = await fetch(`${baseUrl}/.netlify/functions/withdraw`, {
         method: 'POST',
         headers: this.getHeaders(),
-        body: JSON.stringify({ amount, method, phone }),
+        body: JSON.stringify({ amount, method, phone, country }),
       });
       const { data } = await parseResponseSafely(res);
       return data || { success: false, message: 'Erreur lors du retrait.' };

@@ -19,7 +19,7 @@ import { StorageService, SavedBetRecord } from './services/storage';
 import { SupabaseService, isSupabaseConfigured } from './services/supabase';
 import { AuthApi } from './services/authApi';
 import { soundManager } from './services/sound';
-import { calculateCrashMultiplier, generateSeed, sha256 } from './services/provablyFair';
+import { calculateCrashMultiplier, calculateCrashMultiplierAsync, generateSeed, sha256 } from './services/provablyFair';
 import { Users, History, Trophy, Sparkles, Smartphone, MessageSquare, Wallet, PlusCircle, ArrowRight, LogIn } from 'lucide-react';
 import { generateRealisticLiveBets } from './data/virtualPlayers';
 
@@ -108,6 +108,31 @@ export default function App() {
 
   // Initial synchronization with backend / session / Supabase
   useEffect(() => {
+    // 0. Check URL query parameters for return from SasPay checkout redirect
+    const urlParams = new URLSearchParams(window.location.search);
+    const returnPaymentId = urlParams.get('payment_id');
+    if (returnPaymentId) {
+      AuthApi.checkPaymentStatus(returnPaymentId)
+        .then((res) => {
+          if (res.success && res.status === 'SUCCESS') {
+            soundManager.playCashout();
+            addToast('success', 'Paiement SasPay validé !', 'Votre solde a été crédité et votre compte est prêt à jouer.');
+            if (res.user) {
+              setUser(res.user);
+              StorageService.saveUser(res.user);
+            } else if (typeof res.balance === 'number') {
+              const updated = StorageService.updateBalance(0);
+              updated.balance = res.balance;
+              updated.isActivated = true;
+              StorageService.saveUser(updated);
+              setUser({ ...updated });
+            }
+          }
+          window.history.replaceState({}, document.title, window.location.pathname);
+        })
+        .catch(() => {});
+    }
+
     // 1. If user has active JWT session, restore user account, balance & data
     if (AuthApi.isLoggedIn()) {
       AuthApi.fetchMe()
@@ -341,25 +366,46 @@ export default function App() {
         if (remaining <= 0) {
           clearInterval(countdownInterval);
 
-          // Calculate crash multiplier
-          const crashPoint = calculateCrashMultiplier(serverSeed, clientSeed, roundNonce);
-          setFinalMultiplier(crashPoint);
+          // Calculate crash multiplier via HMAC_SHA256 (conforme cahier des charges §4)
+          // Utilise la version async avec HMAC-SHA256 standard (Web Crypto API)
+          // Fallback synchrone si crypto.subtle n'est pas disponible
+          calculateCrashMultiplierAsync(serverSeed, clientSeed, roundNonce)
+            .then((crashPoint) => {
+              setFinalMultiplier(crashPoint);
 
-          // Activate all pending bets
-          setBets((prev) => {
-            const next: [Bet | null, Bet | null] = [null, null];
-            if (prev[0] && prev[0].status === 'pending') {
-              next[0] = { ...prev[0], status: 'active' };
-            }
-            if (prev[1] && prev[1].status === 'pending') {
-              next[1] = { ...prev[1], status: 'active' };
-            }
-            return next;
-          });
+              // Activate all pending bets
+              setBets((prev) => {
+                const next: [Bet | null, Bet | null] = [null, null];
+                if (prev[0] && prev[0].status === 'pending') {
+                  next[0] = { ...prev[0], status: 'active' };
+                }
+                if (prev[1] && prev[1].status === 'pending') {
+                  next[1] = { ...prev[1], status: 'active' };
+                }
+                return next;
+              });
 
-          // Launch flight!
-          soundManager.playTakeoff();
-          setGameStatus('flying');
+              // Launch flight!
+              soundManager.playTakeoff();
+              setGameStatus('flying');
+            })
+            .catch(() => {
+              // Fallback synchrone en cas d'erreur crypto
+              const crashPoint = calculateCrashMultiplier(serverSeed, clientSeed, roundNonce);
+              setFinalMultiplier(crashPoint);
+              setBets((prev) => {
+                const next: [Bet | null, Bet | null] = [null, null];
+                if (prev[0] && prev[0].status === 'pending') {
+                  next[0] = { ...prev[0], status: 'active' };
+                }
+                if (prev[1] && prev[1].status === 'pending') {
+                  next[1] = { ...prev[1], status: 'active' };
+                }
+                return next;
+              });
+              soundManager.playTakeoff();
+              setGameStatus('flying');
+            });
         }
       }, 50);
 
