@@ -44,10 +44,20 @@ exports.handler = async (event) => {
       };
     }
 
-    const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body || {});
-    const { initialBonus = 3000 } = body;
+    if (user.isActivated) {
+      return {
+        statusCode: 400,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          success: false,
+          message: 'Ce compte est déjà activé. Le bonus de bienvenue a déjà été attribué.',
+          user: sanitizeUser(user),
+        }),
+      };
+    }
 
-    const newBalance = (user.balance || 0) + Number(initialBonus);
+    const FIXED_BONUS = 3000;
+    const newBalance = (user.balance || 0) + FIXED_BONUS;
     const updated = updateUser(decoded.id, {
       isActivated: true,
       balance: newBalance,
@@ -57,8 +67,8 @@ exports.handler = async (event) => {
       id: 'tx_act_' + Math.random().toString(36).substring(2, 9),
       userId: decoded.id,
       type: 'activation',
-      amount: 2000,
-      method: 'wave',
+      amount: FIXED_BONUS,
+      method: 'bonus',
       reference: 'ACT-' + Date.now().toString().slice(-6),
       status: 'success',
       timestamp: Date.now(),

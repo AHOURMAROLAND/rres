@@ -49,19 +49,30 @@ exports.handler = async (event) => {
 
     if (eventName === 'transaction.success' && data?.id) {
       const found = findBySaspayPaymentId(data.id);
-      if (found && found.transaction.status === 'pending') {
-        const addedAmount = Number(found.transaction.amount) || Number(data.net_amount || data.amount) || 0;
-        const newBalance = Math.round(((found.user.balance || 0) + addedAmount) * 100) / 100;
+      if (found) {
+        if (found.transaction.status === 'success') {
+          console.log(`[SasPay Netlify Webhook] Transaction ${data.id} already processed. Skipping duplicate.`);
+          return {
+            statusCode: 200,
+            headers: corsHeaders,
+            body: JSON.stringify({ received: true, alreadyProcessed: true }),
+          };
+        }
 
-        updateUser(found.user.id, {
-          balance: newBalance,
-          isActivated: true,
-        });
+        if (found.transaction.status === 'pending') {
+          const addedAmount = Number(found.transaction.amount) || Number(data.net_amount || data.amount) || 0;
+          const newBalance = Math.round(((found.user.balance || 0) + addedAmount) * 100) / 100;
 
-        updateTransaction(found.user.id, data.id, {
-          status: 'success',
-          completedAt: new Date().toISOString(),
-        });
+          updateUser(found.user.id, {
+            balance: newBalance,
+            isActivated: true,
+          });
+
+          updateTransaction(found.user.id, data.id, {
+            status: 'success',
+            completedAt: new Date().toISOString(),
+          });
+        }
       }
     } else if (eventName === 'transaction.failed' && data?.id) {
       const found = findBySaspayPaymentId(data.id);

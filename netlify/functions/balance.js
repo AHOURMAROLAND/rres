@@ -35,10 +35,51 @@ exports.handler = async (event) => {
     }
 
     const body = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body || {});
-    const { balance } = body;
-    const numBalance = Number(balance);
+    const { balance, delta } = body;
 
-    if (isNaN(numBalance) || numBalance < 0) {
+    const user = findById(decoded.id);
+    if (!user) {
+      return {
+        statusCode: 404,
+        headers: corsHeaders,
+        body: JSON.stringify({ success: false, message: 'Utilisateur introuvable.' }),
+      };
+    }
+
+    const currentBalance = user.balance || 0;
+    let targetBalance;
+
+    if (typeof delta === 'number' && !isNaN(delta)) {
+      if (delta < 0) {
+        if (Math.abs(delta) > currentBalance) {
+          return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({ success: false, message: 'Solde insuffisant pour cette opération.' }),
+          };
+        }
+        targetBalance = Math.max(0, currentBalance + delta);
+      } else {
+        if (delta > 1000000) {
+          return {
+            statusCode: 400,
+            headers: corsHeaders,
+            body: JSON.stringify({ success: false, message: 'Gain anormal détecté. Requête rejetée.' }),
+          };
+        }
+        targetBalance = currentBalance + delta;
+      }
+    } else if (typeof balance === 'number' && !isNaN(balance) && balance >= 0) {
+      const diff = balance - currentBalance;
+      if (diff > 200000) {
+        return {
+          statusCode: 400,
+          headers: corsHeaders,
+          body: JSON.stringify({ success: false, message: 'Modification directe du solde non autorisée.' }),
+        };
+      }
+      targetBalance = balance;
+    } else {
       return {
         statusCode: 400,
         headers: corsHeaders,
@@ -46,7 +87,7 @@ exports.handler = async (event) => {
       };
     }
 
-    const cleanBalance = Math.round(numBalance * 100) / 100;
+    const cleanBalance = Math.round(targetBalance * 100) / 100;
     const updatedUser = updateUser(decoded.id, { balance: cleanBalance });
 
     return {

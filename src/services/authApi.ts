@@ -447,7 +447,7 @@ export class AuthApi {
   /**
    * Sync balance with server
    */
-  public static async updateBalance(balance: number): Promise<boolean> {
+  public static async updateBalance(balance: number, delta?: number): Promise<boolean> {
     const token = this.getToken();
     if (!token) return false;
 
@@ -457,7 +457,7 @@ export class AuthApi {
       const res = await fetch(`${baseUrl}/.netlify/functions/balance`, {
         method: 'POST',
         headers: this.getHeaders(),
-        body: JSON.stringify({ balance }),
+        body: JSON.stringify({ balance, delta }),
       });
       return res.ok;
     } catch {

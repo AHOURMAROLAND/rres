@@ -356,27 +356,88 @@ app.get('/api/auth/me', handleMe);
 app.get('/api/user/me', handleMe);
 app.get('/.netlify/functions/me', handleMe);
 
-// Update Balance (e.g. cashout, bet deduct, deposit)
-const handleBalance = (req: Request, res: Response): Promise<void> | void => {
+// Update Balance (e.g. game cashout, bet deduct)
+const handleBalance = async (req: Request, res: Response): Promise<void> => {
   const decoded = authenticateToken(req);
   if (!decoded) {
     res.status(401).json({ success: false, message: 'Non autorisé.' });
     return;
   }
 
-  const { balance } = req.body;
-  if (typeof balance !== 'number' || isNaN(balance) || balance < 0) {
-    res.status(400).json({ success: false, message: 'Solde invalide.' });
-    return;
+  let user = UserDatabase.findById(decoded.id);
+  if (!user && isNeonConfigured()) {
+    try {
+      const neonUser = await NeonDatabase.findById(decoded.id);
+      if (neonUser) {
+        user = {
+          id: neonUser.id,
+          name: neonUser.name,
+          email: neonUser.email,
+          password: neonUser.password_hash,
+          country: neonUser.country,
+          balance: Number(neonUser.balance),
+          isActivated: neonUser.is_activated,
+          createdAt: neonUser.created_at,
+          updatedAt: neonUser.updated_at,
+          bets: [],
+          transactions: [],
+        };
+        UserDatabase.create(user);
+      }
+    } catch (err) {}
   }
 
-  const updated = UserDatabase.update(decoded.id, { balance: Math.round(balance * 100) / 100 });
-  if (!updated) {
+  if (!user) {
     res.status(404).json({ success: false, message: 'Utilisateur introuvable.' });
     return;
   }
 
-  res.json({ success: true, balance: updated.balance });
+  const { balance, delta } = req.body;
+  const currentBalance = user.balance || 0;
+  let targetBalance: number;
+
+  if (typeof delta === 'number' && !isNaN(delta)) {
+    if (delta < 0) {
+      if (Math.abs(delta) > currentBalance) {
+        res.status(400).json({ success: false, message: 'Solde insuffisant pour cette opération.' });
+        return;
+      }
+      targetBalance = Math.max(0, currentBalance + delta);
+    } else {
+      // Limit single flight round gain jump to 1,000,000 FCFA max
+      if (delta > 1000000) {
+        console.warn(`[Anti-Fraud] Blocked excessive win delta of ${delta} for user ${decoded.id}`);
+        res.status(400).json({ success: false, message: 'Gain anormal détecté. Requête rejetée par le contrôle de sécurité.' });
+        return;
+      }
+      targetBalance = currentBalance + delta;
+    }
+  } else if (typeof balance === 'number' && !isNaN(balance) && balance >= 0) {
+    const diff = balance - currentBalance;
+    // Disallow sudden positive balance injection over 200,000 FCFA without an official deposit transaction
+    if (diff > 200000) {
+      console.warn(`[Anti-Fraud] Blocked arbitrary balance jump from ${currentBalance} to ${balance} for user ${decoded.id}`);
+      res.status(400).json({ success: false, message: 'Modification directe du solde non autorisée. Veuillez passer par les canaux de dépôt officiels.' });
+      return;
+    }
+    targetBalance = balance;
+  } else {
+    res.status(400).json({ success: false, message: 'Paramètre de solde invalide.' });
+    return;
+  }
+
+  const cleanBalance = Math.round(targetBalance * 100) / 100;
+  const updated = UserDatabase.update(decoded.id, { balance: cleanBalance });
+
+  if (isNeonConfigured()) {
+    try {
+      await NeonDatabase.updateBalance(decoded.id, cleanBalance);
+    } catch (neonErr) {
+      console.warn('Neon balance sync warning:', neonErr);
+    }
+  }
+
+  res.json({ success: true, balance: cleanBalance, user: updated ? sanitizeUser(updated) : null });
 };
 app.post('/api/user/balance', handleBalance);
 app.post('/.netlify/functions/balance', handleBalance);
@@ -634,20 +695,74 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
 
   const { amount, method = 'wave', phone, country } = req.body;
   const numAmount = Number(amount);
-  const user = UserDatabase.findById(decoded.id);
+
+  let user = UserDatabase.findById(decoded.id);
+  if (isNeonConfigured()) {
+    try {
+      const neonUser = await NeonDatabase.findById(decoded.id);
+      if (neonUser) {
+        if (!user) {
+          user = {
+            id: neonUser.id,
+            name: neonUser.name,
+            email: neonUser.email,
+            password: neonUser.password_hash,
+            country: neonUser.country,
+            balance: Number(neonUser.balance),
+            isActivated: neonUser.is_activated,
+            createdAt: neonUser.created_at,
+            updatedAt: neonUser.updated_at,
+            bets: [],
+            transactions: [],
+          };
+          UserDatabase.create(user);
+        } else {
+          user.balance = Number(neonUser.balance);
+        }
+      }
+    } catch (err) {}
+  }
+
   if (!user) {
     res.status(404).json({ success: false, message: 'Utilisateur introuvable.' });
     return;
   }
 
-  if (isNaN(numAmount) || numAmount < MIN_WITHDRAW_FCFA || numAmount > user.balance) {
-    res.status(400).json({ success: false, message: `Solde insuffisant ou montant invalide (minimum ${MIN_WITHDRAW_FCFA.toLocaleString('fr-FR')} FCFA).` });
+  const MAX_WITHDRAW_FCFA = 500000;
+  if (isNaN(numAmount) || numAmount < MIN_WITHDRAW_FCFA) {
+    res.status(400).json({ success: false, message: `Montant minimum de retrait : ${MIN_WITHDRAW_FCFA.toLocaleString('fr-FR')} FCFA.` });
+    return;
+  }
+
+  if (numAmount > MAX_WITHDRAW_FCFA) {
+    res.status(400).json({ success: false, message: `Montant maximum par retrait : ${MAX_WITHDRAW_FCFA.toLocaleString('fr-FR')} FCFA.` });
+    return;
+  }
+
+  if (numAmount > user.balance) {
+    res.status(400).json({ success: false, message: `Solde insuffisant (votre solde : ${user.balance.toLocaleString('fr-FR')} FCFA).` });
     return;
   }
 
   const cleanPhone = (phone || user.email || '').toString().trim();
+  if (cleanPhone.length < 8) {
+    res.status(400).json({ success: false, message: 'Numéro de téléphone Mobile Money invalide.' });
+    return;
+  }
+
   const txId = 'tx_wth_' + Math.random().toString(36).substring(2, 9);
   const reference = 'RET-' + Date.now().toString().slice(-6);
+
+  // Lock and deduct balance upfront
+  const previousBalance = user.balance;
+  const newBalance = Math.round((previousBalance - numAmount) * 100) / 100;
+  UserDatabase.update(decoded.id, { balance: newBalance });
+
+  if (isNeonConfigured()) {
+    try {
+      await NeonDatabase.updateBalance(decoded.id, newBalance);
+    } catch (err) {}
+  }
 
   // 1. If SasPay is configured, initiate real payout
   if (isSaspayConfigured()) {
@@ -667,16 +782,19 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
       });
 
       if (!payoutRes.success) {
+        // Rollback balance on gateway rejection
+        UserDatabase.update(decoded.id, { balance: previousBalance });
+        if (isNeonConfigured()) {
+          try {
+            await NeonDatabase.updateBalance(decoded.id, previousBalance);
+          } catch (err) {}
+        }
         res.status(400).json({
           success: false,
-          message: payoutRes.message || 'Échec de l\'envoi du retrait via SasPay.',
+          message: payoutRes.message || 'Échec de l\'envoi du retrait via SasPay. Vos fonds ont été recrédités sur votre solde.',
         });
         return;
       }
-
-      // Deduct balance
-      const newBalance = Math.round((user.balance - numAmount) * 100) / 100;
-      const updated = UserDatabase.update(decoded.id, { balance: newBalance });
 
       const tx = {
         id: txId,
@@ -694,7 +812,6 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
 
       if (isNeonConfigured()) {
         try {
-          await NeonDatabase.updateBalance(decoded.id, newBalance);
           await NeonDatabase.addTransaction({
             id: tx.id,
             user_id: decoded.id,
@@ -710,6 +827,7 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
         } catch (err) {}
       }
 
+      const updated = UserDatabase.findById(decoded.id);
       res.json({
         success: true,
         message: `Demande de retrait de ${numAmount.toLocaleString('fr-FR')} FCFA transférée vers votre compte Mobile Money.`,
@@ -720,18 +838,22 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
       return;
     } catch (err: any) {
       console.error('SasPay payout error:', err);
+      // Rollback balance
+      UserDatabase.update(decoded.id, { balance: previousBalance });
+      if (isNeonConfigured()) {
+        try {
+          await NeonDatabase.updateBalance(decoded.id, previousBalance);
+        } catch (rErr) {}
+      }
       res.status(500).json({
         success: false,
-        message: err?.message || 'Erreur lors du traitement du retrait SasPay.',
+        message: err?.message || 'Erreur lors du traitement du retrait SasPay. Solde restauré.',
       });
       return;
     }
   }
 
   // 2. Offline simulation fallback
-  const newBalance = Math.round((user.balance - numAmount) * 100) / 100;
-  const updated = UserDatabase.update(decoded.id, { balance: newBalance });
-
   const tx = {
     id: txId,
     userId: decoded.id,
@@ -746,7 +868,6 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
   UserDatabase.addTransaction(decoded.id, tx);
   if (isNeonConfigured()) {
     try {
-      await NeonDatabase.updateBalance(decoded.id, newBalance);
       await NeonDatabase.addTransaction({
         id: tx.id,
         user_id: decoded.id,
@@ -761,6 +882,7 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
     } catch (err) {}
   }
 
+  const updated = UserDatabase.findById(decoded.id);
   res.json({
     success: true,
     message: `Retrait de ${numAmount.toLocaleString('fr-FR')} FCFA transféré vers votre compte Mobile Money.`,
@@ -772,7 +894,7 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
 app.post('/api/user/withdraw', handleWithdraw);
 app.post('/.netlify/functions/withdraw', handleWithdraw);
 
-// SasPay Webhook Endpoint
+// SasPay Webhook Endpoint (Strict idempotency & HMAC verification)
 const handleSaspayWebhook = async (req: Request, res: Response): Promise<void> => {
   const sig = (req.headers['x-webhook-signature'] as string) || '';
   const timestamp = (req.headers['x-webhook-timestamp'] as string) || '';
@@ -791,26 +913,63 @@ const handleSaspayWebhook = async (req: Request, res: Response): Promise<void> =
   console.log(`[SasPay Webhook] Event received: ${event}`, data?.id);
 
   if (event === 'transaction.success' && data?.id) {
-    const found = UserDatabase.findBySaspayPaymentId(data.id);
-    if (found && found.transaction.status === 'pending') {
-      const addedAmount = Number(found.transaction.amount) || Number(data.net_amount || data.amount) || 0;
-      const newBalance = Math.round(((found.user.balance || 0) + addedAmount) * 100) / 100;
+    // 1. Look up transaction in local DB
+    let found = UserDatabase.findBySaspayPaymentId(data.id);
 
-      UserDatabase.update(found.user.id, {
-        balance: newBalance,
-        isActivated: true,
-      });
+    // 2. If not in local DB memory, look up in Neon
+    if (!found && isNeonConfigured()) {
+      try {
+        const neonFound = await NeonDatabase.findTransactionBySaspayId(data.id);
+        if (neonFound) {
+          found = {
+            user: {
+              id: neonFound.user.id,
+              name: neonFound.user.name,
+              email: neonFound.user.email,
+              password: '',
+              country: neonFound.user.country,
+              balance: neonFound.user.balance,
+              isActivated: true,
+              createdAt: '',
+              updatedAt: '',
+              bets: [],
+              transactions: [neonFound.transaction],
+            },
+            transaction: neonFound.transaction,
+          };
+        }
+      } catch (err) {}
+    }
 
-      UserDatabase.updateTransaction(found.user.id, data.id, {
-        status: 'success',
-        completedAt: new Date().toISOString(),
-      });
+    if (found) {
+      // IDEMPOTENCY CHECK: If already credited, skip!
+      if (found.transaction.status === 'success') {
+        console.log(`[SasPay Webhook] Transaction ${data.id} already processed. Duplicate skipped.`);
+        res.status(200).json({ received: true, alreadyProcessed: true });
+        return;
+      }
 
-      if (isNeonConfigured()) {
-        try {
-          await NeonDatabase.updateBalance(found.user.id, newBalance, true);
-          await NeonDatabase.updateTransactionStatus(data.id, 'success');
-        } catch (err) {}
+      if (found.transaction.status === 'pending') {
+        const addedAmount = Number(found.transaction.amount) || Number(data.net_amount || data.amount) || 0;
+        const newBalance = Math.round(((found.user.balance || 0) + addedAmount) * 100) / 100;
+
+        UserDatabase.update(found.user.id, {
+          balance: newBalance,
+          isActivated: true,
+        });
+
+        UserDatabase.updateTransaction(found.user.id, data.id, {
+          status: 'success',
+          completedAt: new Date().toISOString(),
+        });
+
+        if (isNeonConfigured()) {
+          try {
+            await NeonDatabase.updateBalance(found.user.id, newBalance, true);
+            await NeonDatabase.updateTransactionStatus(data.id, 'success');
+          } catch (err) {}
+        }
+        console.log(`[SasPay Webhook] Account ${found.user.id} credited with +${addedAmount} FCFA`);
       }
     }
   } else if (event === 'transaction.failed' && data?.id) {
@@ -832,22 +991,55 @@ const handleSaspayWebhook = async (req: Request, res: Response): Promise<void> =
 app.post('/api/webhook/saspay', handleSaspayWebhook);
 app.post('/.netlify/functions/webhook-saspay', handleSaspayWebhook);
 
-// Activate Account
-const handleActivate = (req: Request, res: Response): Promise<void> | void => {
+// Activate Account (Strict: max 3000 FCFA bonus, one-time only)
+const handleActivate = async (req: Request, res: Response): Promise<void> => {
   const decoded = authenticateToken(req);
   if (!decoded) {
     res.status(401).json({ success: false, message: 'Non autorisé.' });
     return;
   }
 
-  const { initialBonus = 3000 } = req.body;
-  const user = UserDatabase.findById(decoded.id);
+  let user = UserDatabase.findById(decoded.id);
+  if (!user && isNeonConfigured()) {
+    try {
+      const neonUser = await NeonDatabase.findById(decoded.id);
+      if (neonUser) {
+        user = {
+          id: neonUser.id,
+          name: neonUser.name,
+          email: neonUser.email,
+          password: neonUser.password_hash,
+          country: neonUser.country,
+          balance: Number(neonUser.balance),
+          isActivated: neonUser.is_activated,
+          createdAt: neonUser.created_at,
+          updatedAt: neonUser.updated_at,
+          bets: [],
+          transactions: [],
+        };
+        UserDatabase.create(user);
+      }
+    } catch (err) {}
+  }
+
   if (!user) {
     res.status(404).json({ success: false, message: 'Utilisateur introuvable.' });
     return;
   }
 
-  const newBalance = (user.balance || 0) + Number(initialBonus);
+  // Prevent multiple claims of activation bonus
+  if (user.isActivated) {
+    res.status(400).json({
+      success: false,
+      message: 'Ce compte est déjà activé. Le bonus de bienvenue a déjà été attribué.',
+      user: sanitizeUser(user),
+    });
+    return;
+  }
+
+  // Fixed starter bonus: 3 000 FCFA
+  const FIXED_BONUS = 3000;
+  const newBalance = (user.balance || 0) + FIXED_BONUS;
   const updated = UserDatabase.update(decoded.id, {
     isActivated: true,
     balance: newBalance,
@@ -857,18 +1049,34 @@ const handleActivate = (req: Request, res: Response): Promise<void> | void => {
     id: 'tx_act_' + Math.random().toString(36).substring(2, 9),
     userId: decoded.id,
     type: 'activation',
-    amount: 2000,
-    method: 'wave',
+    amount: FIXED_BONUS,
+    method: 'bonus',
     reference: 'ACT-' + Date.now().toString().slice(-6),
     status: 'success',
     timestamp: Date.now(),
   };
   UserDatabase.addTransaction(decoded.id, tx);
 
+  if (isNeonConfigured()) {
+    try {
+      await NeonDatabase.updateBalance(decoded.id, newBalance, true);
+      await NeonDatabase.addTransaction({
+        id: tx.id,
+        user_id: decoded.id,
+        type: 'activation',
+        amount: FIXED_BONUS,
+        currency: 'XOF',
+        method: 'bonus',
+        reference: tx.reference,
+        status: 'success',
+      });
+    } catch (err) {}
+  }
+
   res.json({
     success: true,
     user: updated ? sanitizeUser(updated) : null,
-    message: 'Compte activé avec succès ! Bonus de 3 000 FCFA crédité.',
+    message: 'Compte activé avec succès ! Bonus de bienvenue de 3 000 FCFA crédité.',
   });
 };
 app.post('/api/user/activate', handleActivate);

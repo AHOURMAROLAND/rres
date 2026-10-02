@@ -267,7 +267,7 @@ export class StorageService {
       SupabaseService.updateBalance(user.id, user.balance).catch(() => {});
     }
     if (AuthApi.isLoggedIn()) {
-      AuthApi.updateBalance(user.balance).catch(() => {});
+      AuthApi.updateBalance(user.balance, amountDelta).catch(() => {});
     }
     return user;
   }

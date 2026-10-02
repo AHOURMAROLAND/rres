@@ -51,6 +51,19 @@ function writeDB(data) {
   }
 }
 
+let neonSql = null;
+function getNeon() {
+  if (!neonSql && process.env.DATABASE_URL && process.env.DATABASE_URL.trim() !== '') {
+    try {
+      const { neon } = require('@neondatabase/serverless');
+      neonSql = neon(process.env.DATABASE_URL);
+    } catch (e) {
+      console.warn('Neon serverless driver not loaded:', e.message);
+    }
+  }
+  return neonSql;
+}
+
 function findByEmail(email) {
   const db = readDB();
   const cleanEmail = String(email).trim().toLowerCase();
@@ -66,6 +79,16 @@ function createUser(user) {
   const db = readDB();
   db.users.push(user);
   writeDB(db);
+
+  const sql = getNeon();
+  if (sql) {
+    sql`
+      INSERT INTO public.users (id, name, email, password_hash, country, balance, is_activated)
+      VALUES (${user.id}, ${user.name}, ${user.email.toLowerCase().trim()}, ${user.password}, ${user.country || 'CI'}, ${user.balance || 0}, ${Boolean(user.isActivated)})
+      ON CONFLICT (id) DO NOTHING
+    `.catch((err) => console.warn('Neon createUser error in lambda:', err.message));
+  }
+
   return user;
 }
 
@@ -81,6 +104,22 @@ function updateUser(id, updates) {
   };
 
   writeDB(db);
+
+  const sql = getNeon();
+  if (sql) {
+    if (typeof updates.balance === 'number') {
+      const isAct = updates.isActivated !== undefined ? updates.isActivated : null;
+      sql`
+        UPDATE public.users 
+        SET 
+          balance = ${updates.balance},
+          is_activated = CASE WHEN ${isAct === true} THEN true ELSE is_activated END,
+          updated_at = NOW()
+        WHERE id = ${id}
+      `.catch((err) => console.warn('Neon updateBalance error in lambda:', err.message));
+    }
+  }
+
   return db.users[index];
 }
 
@@ -93,6 +132,20 @@ function addBet(userId, bet) {
     user.bets = user.bets.slice(0, 100);
     user.updatedAt = new Date().toISOString();
     writeDB(db);
+
+    const sql = getNeon();
+    if (sql) {
+      sql`
+        INSERT INTO public.bets (
+          id, user_id, round_id, game_mode, amount, 
+          crash_multiplier, cashout_multiplier, gross_profit, fee, net_profit, won
+        ) VALUES (
+          ${bet.id || 'b_' + Date.now()}, ${userId}, ${bet.roundId || 'R-0'}, ${bet.gameMode || 'real'}, ${Number(bet.amount) || 0},
+          ${Number(bet.multiplier) || 1}, ${bet.cashoutMultiplier ? Number(bet.cashoutMultiplier) : null}, ${Number(bet.grossProfit) || 0}, 
+          ${Number(bet.fee) || 0}, ${Number(bet.netProfit) || 0}, ${Boolean(bet.won)}
+        )
+      `.catch(() => {});
+    }
   }
 }
 
@@ -105,6 +158,20 @@ function addTransaction(userId, tx) {
     user.transactions = user.transactions.slice(0, 50);
     user.updatedAt = new Date().toISOString();
     writeDB(db);
+
+    const sql = getNeon();
+    if (sql) {
+      sql`
+        INSERT INTO public.transactions (
+          id, user_id, type, amount, currency, method, 
+          phone_number, reference, status, saspay_payment_id, saspay_payout_id, checkout_url
+        ) VALUES (
+          ${tx.id}, ${userId}, ${tx.type || 'deposit'}, ${Number(tx.amount) || 0}, ${tx.currency || 'XOF'}, ${tx.method || 'wave'},
+          ${tx.phone || tx.phoneNumber || ''}, ${tx.reference || ''}, ${tx.status || 'pending'}, 
+          ${tx.saspayPaymentId || null}, ${tx.saspayPayoutId || null}, ${tx.checkoutUrl || null}
+        )
+      `.catch(() => {});
+    }
   }
 }
 
@@ -135,6 +202,16 @@ function updateTransaction(userId, txIdOrSaspayId, updates) {
   };
   user.updatedAt = new Date().toISOString();
   writeDB(db);
+
+  const sql = getNeon();
+  if (sql && updates.status) {
+    sql`
+      UPDATE public.transactions 
+      SET status = ${updates.status}, updated_at = NOW()
+      WHERE saspay_payment_id = ${txIdOrSaspayId} OR id = ${txIdOrSaspayId}
+    `.catch(() => {});
+  }
+
   return user;
 }
 
