@@ -162,10 +162,10 @@
       "email": "admin@kotizo.app",
       "password": "$2b$10$9rEyzjmITL1S.idb1LzemuK4tBlozxwok/rLJJyc/aY1EGwALTThe",
       "country": "Togo",
-      "balance": 200,
+      "balance": 0,
       "isActivated": true,
       "createdAt": "2026-09-29T22:54:38.511Z",
-      "updatedAt": "2026-09-29T22:56:55.352Z",
+      "updatedAt": "2026-10-03T18:03:50.914Z",
       "bets": [],
       "transactions": [
         {
