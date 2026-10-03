@@ -16,7 +16,8 @@ import {
 import { PaymentMethod, User } from '../types';
 import { soundManager } from '../services/sound';
 import { AuthApi } from '../services/authApi';
-import { COUNTRIES } from '../data/countries';
+import { COUNTRIES, getCountryByCode } from '../data/countries';
+import { PaymentLogo } from './PaymentLogos';
 
 interface DepositWithdrawModalProps {
   isOpen: boolean;
@@ -140,6 +141,7 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [pendingPayment, setPendingPayment] = useState<PendingPaymentState | null>(null);
 
+  const selectedCountry = getCountryByCode(country);
   const pollIntervalRef = useRef<any>(null);
 
   // Clear polling interval when unmounting or closing
@@ -271,10 +273,11 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
     }
 
     setIsProcessing(true);
+    const fullPhone = phone.trim().startsWith('+') ? phone.trim() : `${selectedCountry.dialCode} ${phone.trim()}`;
 
     try {
       if (tab === 'deposit') {
-        const res = await AuthApi.deposit(cleanAmount, method, phone.trim(), country, otp.trim() || undefined);
+        const res = await AuthApi.deposit(cleanAmount, method, fullPhone, country, otp.trim() || undefined);
 
         if (!res.success) {
           setIsProcessing(false);
@@ -321,7 +324,7 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
 
         setIsProcessing(false);
         soundManager.playCashout();
-        onWithdrawSuccess(cleanAmount, method, phone.trim(), (res as any).transaction);
+        onWithdrawSuccess(cleanAmount, method, fullPhone, (res as any).transaction);
         setSuccessMessage(res.message || `Retrait de ${cleanAmount.toLocaleString('fr-FR')} FCFA transféré vers votre compte ${method.toUpperCase()} !`);
       }
 
@@ -507,19 +510,19 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
                       key={m.id}
                       type="button"
                       onClick={() => { soundManager.playClick(); setMethod(m.id); }}
-                      className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex items-center gap-2 relative ${
+                      className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex items-center gap-2.5 relative ${
                         method === m.id
-                          ? 'bg-orange-950/60 border-orange-500 text-orange-400 font-bold'
+                          ? 'bg-orange-950/60 border-orange-500 text-orange-400 font-bold shadow-md shadow-orange-500/10'
                           : 'bg-slate-900 border-slate-800 text-slate-400 hover:bg-slate-800'
                       }`}
                     >
-                      <span className="text-xl shrink-0">{m.icon}</span>
+                      <PaymentLogo method={m.id} size="sm" className="shrink-0" />
                       <div className="min-w-0 flex-1">
                         <span className="text-xs font-bold truncate block">
                           {m.label}
                         </span>
                         {m.badge && (
-                          <span className="text-[9px] font-semibold text-emerald-400 block">
+                          <span className="text-[9px] font-semibold text-emerald-400 block truncate">
                             {m.badge}
                           </span>
                         )}
@@ -592,21 +595,29 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
                 </div>
               </div>
 
-              {/* Phone number */}
+              {/* Phone number with dynamic dial code badge */}
               {method !== 'card' && method !== 'crypto' ? (
                 <div>
-                  <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
-                    Numéro de compte Mobile Money
-                  </label>
-                  <div className="relative">
-                    <Smartphone className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-bold text-slate-300 uppercase tracking-wider">
+                      Numéro Mobile Money
+                    </label>
+                    <span className="text-[10px] text-slate-400 font-mono-num">
+                      Format : {selectedCountry.dialCode} {selectedCountry.example}
+                    </span>
+                  </div>
+                  <div className="relative flex rounded-xl border border-slate-700 bg-slate-900 overflow-hidden focus-within:border-orange-500 transition-colors">
+                    <div className="flex items-center gap-1.5 px-3 bg-slate-800/90 border-r border-slate-700/80 text-xs font-bold text-white select-none">
+                      <span className="text-sm">{selectedCountry.flag}</span>
+                      <span className="font-mono-num text-orange-400">{selectedCountry.dialCode}</span>
+                    </div>
                     <input
                       type="tel"
                       required
                       value={phone}
                       onChange={(e) => setPhone(e.target.value)}
-                      placeholder="07 00 00 00 00 ou +225..."
-                      className="w-full pl-9 pr-3 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-sm font-mono-num font-semibold text-white outline-none focus:border-orange-500"
+                      placeholder={selectedCountry.example}
+                      className="w-full px-3 py-2.5 bg-transparent text-sm font-mono-num font-semibold text-white placeholder-slate-500 outline-none"
                     />
                   </div>
                 </div>

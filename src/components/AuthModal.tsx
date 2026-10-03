@@ -22,24 +22,7 @@ import { soundManager } from '../services/sound';
 import { AuthApi } from '../services/authApi';
 import { StorageService } from '../services/storage';
 import { isSupabaseConfigured } from '../services/supabase';
-
-const WEST_AFRICA_COUNTRIES = [
-  { code: 'CI', name: 'Côte d\'Ivoire', flag: '🇨🇮' },
-  { code: 'SN', name: 'Sénégal', flag: '🇸🇳' },
-  { code: 'ML', name: 'Mali', flag: '🇲🇱' },
-  { code: 'BF', name: 'Burkina Faso', flag: '🇧🇫' },
-  { code: 'BJ', name: 'Bénin', flag: '🇧🇯' },
-  { code: 'TG', name: 'Togo', flag: '🇹🇬' },
-  { code: 'CM', name: 'Cameroun', flag: '🇨🇲' },
-  { code: 'GN', name: 'Guinée', flag: '🇬🇳' },
-  { code: 'CG', name: 'Congo', flag: '🇨🇬' },
-  { code: 'GA', name: 'Gabon', flag: '🇬🇦' },
-  { code: 'NE', name: 'Niger', flag: '🇳🇪' },
-  { code: 'FR', name: 'France', flag: '🇫🇷' },
-  { code: 'BE', name: 'Belgique', flag: '🇧🇪' },
-  { code: 'CA', name: 'Canada', flag: '🇨🇦' },
-  { code: 'OTHER', name: 'Autre pays', flag: '🌍' },
-];
+import { COUNTRIES } from '../data/countries';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -379,9 +362,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     onChange={(e) => setSignupCountry(e.target.value)}
                     className="w-full pl-10 pr-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700/80 text-sm font-semibold text-white outline-none focus:border-orange-500 appearance-none cursor-pointer transition-colors"
                   >
-                    {WEST_AFRICA_COUNTRIES.map((c) => (
+                    {COUNTRIES.map((c) => (
                       <option key={c.code} value={c.name} className="bg-slate-900 text-white">
-                        {c.flag} {c.name}
+                        {c.flag} {c.name} ({c.dialCode})
                       </option>
                     ))}
                   </select>

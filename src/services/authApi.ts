@@ -8,6 +8,7 @@ export interface RegisterPayload {
   email: string;
   country: string;
   password: string;
+  otp?: string;
 }
 
 export interface LoginPayload {
@@ -603,6 +604,136 @@ export class AuthApi {
       return res.ok;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Pings and checks email domain via DNS MX records before submission
+   */
+  public static async verifyEmailDomain(email: string): Promise<{ valid: boolean; reason?: string }> {
+    const cleanEmail = (email || '').trim().toLowerCase();
+    if (!cleanEmail) {
+      return { valid: false, reason: "Veuillez saisir une adresse email." };
+    }
+
+    // Quick regex validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(cleanEmail)) {
+      return { valid: false, reason: "Format d'adresse email invalide." };
+    }
+
+    const baseUrl = getApiBaseUrl();
+    try {
+      const res = await fetch(`${baseUrl}/.netlify/functions/verify-email-domain`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail }),
+      });
+      const { data, isJson } = await parseResponseSafely(res);
+      if (res.ok && data?.valid) {
+        return { valid: true };
+      }
+      return {
+        valid: false,
+        reason: isJson && data?.reason ? data.reason : "Cette adresse email ou ce nom de domaine n'existe pas.",
+      };
+    } catch {
+      // In case of complete network outage during ping, let user proceed
+      return { valid: true };
+    }
+  }
+
+  /**
+   * Sends Brevo OTP code to user's email for registration verification
+   */
+  public static async sendRegisterOtp(email: string, name?: string): Promise<{ success: boolean; message: string }> {
+    const baseUrl = getApiBaseUrl();
+    try {
+      const res = await fetch(`${baseUrl}/.netlify/functions/send-register-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim().toLowerCase(), name }),
+      });
+      const { data, isJson } = await parseResponseSafely(res);
+      if (res.ok && data?.success) {
+        return {
+          success: true,
+          message: data.message || `Code de vérification envoyé à ${email}.`,
+        };
+      }
+      return {
+        success: false,
+        message: isJson && data?.message ? data.message : "Erreur lors de l'envoi du code de vérification.",
+      };
+    } catch {
+      return {
+        success: false,
+        message: "Erreur réseau lors de l'envoi du code. Veuillez réessayer.",
+      };
+    }
+  }
+
+  /**
+   * Request password reset code via Brevo OTP
+   */
+  public static async forgotPasswordRequest(email: string): Promise<{ success: boolean; message: string }> {
+    const baseUrl = getApiBaseUrl();
+    try {
+      const res = await fetch(`${baseUrl}/.netlify/functions/forgot-password-request`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim().toLowerCase() }),
+      });
+      const { data, isJson } = await parseResponseSafely(res);
+      if (res.ok && data?.success) {
+        return {
+          success: true,
+          message: data.message || `Code de réinitialisation envoyé à ${email}.`,
+        };
+      }
+      return {
+        success: false,
+        message: isJson && data?.message ? data.message : "Impossible de traiter la demande.",
+      };
+    } catch {
+      return {
+        success: false,
+        message: "Erreur réseau. Veuillez réessayer.",
+      };
+    }
+  }
+
+  /**
+   * Reset password with Brevo OTP code
+   */
+  public static async forgotPasswordReset(email: string, otp: string, newPassword: string): Promise<{ success: boolean; message: string }> {
+    const baseUrl = getApiBaseUrl();
+    try {
+      const res = await fetch(`${baseUrl}/.netlify/functions/forgot-password-reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: email.trim().toLowerCase(),
+          otp: otp.trim(),
+          newPassword,
+        }),
+      });
+      const { data, isJson } = await parseResponseSafely(res);
+      if (res.ok && data?.success) {
+        return {
+          success: true,
+          message: data.message || "Votre mot de passe a été modifié avec succès.",
+        };
+      }
+      return {
+        success: false,
+        message: isJson && data?.message ? data.message : "Code invalide ou expiré.",
+      };
+    } catch {
+      return {
+        success: false,
+        message: "Erreur réseau lors de la mise à jour du mot de passe.",
+      };
     }
   }
 

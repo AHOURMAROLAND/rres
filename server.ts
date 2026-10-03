@@ -13,11 +13,55 @@ import {
   createSaspayPayout,
   verifySaspayWebhookSignature,
 } from './server/saspay.js';
-import { isNeonConfigured, NeonDatabase } from './server/neon.js';
+import { isNeonConfigured, NeonDatabase, getNeonSql } from './server/neon.js';
+import {
+  verifyEmailAddress,
+  sendBrevoEmail,
+  OtpService,
+  EmailTemplates,
+} from './server/email.js';
 
 const app = express();
 const PORT = 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'aerocrash_super_secret_jwt_key_2026';
+
+// Helper: send Brevo deposit invoice email
+function sendDepositInvoiceEmail(user: { email: string; name: string }, tx: any, newBalance: number) {
+  if (!user || !user.email) return;
+  sendBrevoEmail({
+    toEmail: user.email,
+    toName: user.name,
+    subject: `🧾 Reçu officiel de dépôt (${tx.reference}) - AeroCrash`,
+    htmlContent: EmailTemplates.depositInvoice({
+      name: user.name || 'Joueur AeroCrash',
+      amount: Number(tx.amount || 0),
+      reference: tx.reference || 'DEP-000000',
+      method: String(tx.method || 'wave').toUpperCase(),
+      phone: String(tx.phone || tx.phoneNumber || ''),
+      balance: newBalance,
+      date: new Date().toLocaleString('fr-FR', { timeZone: 'Africa/Abidjan' }),
+    }),
+  }).catch((err) => console.warn('Failed to send deposit invoice email:', err));
+}
+
+// Helper: send Brevo withdraw receipt email
+function sendWithdrawReceiptEmail(user: { email: string; name: string }, tx: any, newBalance: number) {
+  if (!user || !user.email) return;
+  sendBrevoEmail({
+    toEmail: user.email,
+    toName: user.name,
+    subject: `💸 Bordereau de retrait (${tx.reference}) - AeroCrash`,
+    htmlContent: EmailTemplates.withdrawReceipt({
+      name: user.name || 'Joueur AeroCrash',
+      amount: Number(tx.amount || 0),
+      reference: tx.reference || 'RET-000000',
+      method: String(tx.method || 'wave').toUpperCase(),
+      phone: String(tx.phone || tx.phoneNumber || ''),
+      balance: newBalance,
+      date: new Date().toLocaleString('fr-FR', { timeZone: 'Africa/Abidjan' }),
+    }),
+  }).catch((err) => console.warn('Failed to send withdraw receipt email:', err));
+}
 
 // Configurable Business Rules
 const MIN_DEPOSIT_FCFA = Number(process.env.MIN_DEPOSIT_FCFA || 500);
@@ -79,10 +123,178 @@ app.get('/api/health', (req: Request, res: Response) => {
 // 2. AUTHENTICATION HANDLERS & ROUTES
 // ==========================================
 
+// Email Domain Ping Handler
+const handleVerifyEmailDomain = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { email } = req.body || {};
+    const result = await verifyEmailAddress(email);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ valid: false, reason: err?.message || 'Erreur vérification email' });
+  }
+};
+
+// Send Registration OTP Handler
+const handleSendRegisterOtp = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { email, name } = req.body || {};
+    if (!email) {
+      res.status(400).json({ success: false, message: 'Adresse email requise.' });
+      return;
+    }
+    const cleanEmail = String(email).trim().toLowerCase();
+    const cleanName = String(name || 'Pilote').trim();
+
+    // 1. Verify email ping / DNS
+    const verification = await verifyEmailAddress(cleanEmail);
+    if (!verification.valid) {
+      res.status(400).json({
+        success: false,
+        message: verification.reason || 'Cette adresse email est invalide ou son domaine n\'existe pas.',
+      });
+      return;
+    }
+
+    // 2. Check if already exists
+    let existing = UserDatabase.findByEmail(cleanEmail);
+    if (!existing && isNeonConfigured()) {
+      const neonFound = await NeonDatabase.findByEmail(cleanEmail);
+      if (neonFound) existing = neonFound as any;
+    }
+    if (existing) {
+      res.status(409).json({
+        success: false,
+        message: 'Un compte avec cette adresse email existe déjà. Veuillez vous connecter.',
+      });
+      return;
+    }
+
+    // 3. Generate and send OTP via Brevo
+    const otp = OtpService.setOtp(cleanEmail, 'register', { name: cleanName });
+    await sendBrevoEmail({
+      toEmail: cleanEmail,
+      toName: cleanName,
+      subject: `🚀 Votre code de vérification AeroCrash : ${otp}`,
+      htmlContent: EmailTemplates.registerOtp(cleanName, otp),
+    });
+
+    res.json({
+      success: true,
+      message: `Code de vérification envoyé à ${cleanEmail}. Vérifiez votre boîte de réception.`,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error?.message || 'Erreur lors de l\'envoi du code.' });
+  }
+};
+
+// Forgot Password - Step 1: Request Code
+const handleForgotPasswordRequest = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { email } = req.body || {};
+    if (!email) {
+      res.status(400).json({ success: false, message: 'Adresse email requise.' });
+      return;
+    }
+    const cleanEmail = String(email).trim().toLowerCase();
+
+    // 1. Verify email ping
+    const verification = await verifyEmailAddress(cleanEmail);
+    if (!verification.valid) {
+      res.status(400).json({
+        success: false,
+        message: verification.reason || 'Cette adresse email est invalide ou n\'existe pas.',
+      });
+      return;
+    }
+
+    // 2. Find user
+    let user = UserDatabase.findByEmail(cleanEmail);
+    if (!user && isNeonConfigured()) {
+      const neonFound = await NeonDatabase.findByEmail(cleanEmail);
+      if (neonFound) user = neonFound as any;
+    }
+    if (!user) {
+      res.status(404).json({
+        success: false,
+        message: 'Aucun compte n\'est associé à cette adresse email. Veuillez vérifier la saisie.',
+      });
+      return;
+    }
+
+    // 3. Generate & send OTP via Brevo
+    const otp = OtpService.setOtp(cleanEmail, 'forgot_password', { userId: user.id });
+    await sendBrevoEmail({
+      toEmail: cleanEmail,
+      toName: user.name,
+      subject: `🛡️ Réinitialisation de votre mot de passe AeroCrash : ${otp}`,
+      htmlContent: EmailTemplates.forgotPasswordOtp(user.name, otp),
+    });
+
+    res.json({
+      success: true,
+      message: `Un code de réinitialisation a été envoyé à ${cleanEmail}.`,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error?.message || 'Erreur serveur.' });
+  }
+};
+
+// Forgot Password - Step 2: Reset Password with OTP
+const handleForgotPasswordReset = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { email, otp, newPassword } = req.body || {};
+    if (!email || !otp || !newPassword) {
+      res.status(400).json({ success: false, message: 'Email, code de vérification et nouveau mot de passe requis.' });
+      return;
+    }
+
+    const cleanEmail = String(email).trim().toLowerCase();
+    const rawPassword = String(newPassword);
+
+    if (rawPassword.length < 6) {
+      res.status(400).json({ success: false, message: 'Le mot de passe doit comporter au moins 6 caractères.' });
+      return;
+    }
+
+    // Verify OTP
+    const otpCheck = OtpService.verifyOtp(cleanEmail, String(otp), 'forgot_password');
+    if (!otpCheck.valid) {
+      res.status(400).json({
+        success: false,
+        message: otpCheck.message || 'Code de vérification invalide ou expiré.',
+      });
+      return;
+    }
+
+    // Hash new password
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(rawPassword, saltRounds);
+
+    let user = UserDatabase.findByEmail(cleanEmail);
+    if (user) {
+      UserDatabase.update(user.id, { password: hashedPassword });
+    }
+
+    if (isNeonConfigured()) {
+      try {
+        const sql = getNeonSql();
+        await sql`UPDATE public.users SET password_hash = ${hashedPassword}, updated_at = NOW() WHERE LOWER(email) = ${cleanEmail}`;
+      } catch (err) {}
+    }
+
+    res.json({
+      success: true,
+      message: 'Votre mot de passe a été modifié avec succès ! Vous pouvez maintenant vous connecter.',
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error?.message || 'Erreur serveur.' });
+  }
+};
+
 // Register Handler (supports both /api/auth/register and /api/register)
 const handleRegister = async (req: Request, res: Response): Promise<void> => {
   try {
-    const { name, email, country, password } = req.body || {};
+    const { name, email, country, password, otp } = req.body || {};
 
     // Validation 1: Required fields
     if (!name || !email || !country || !password) {
@@ -98,7 +310,7 @@ const handleRegister = async (req: Request, res: Response): Promise<void> => {
     const cleanCountry = String(country).trim();
     const rawPassword = String(password);
 
-    // Validation 2: Email format
+    // Validation 2: Email format & DNS Ping
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(cleanEmail)) {
       res.status(400).json({
@@ -106,6 +318,27 @@ const handleRegister = async (req: Request, res: Response): Promise<void> => {
         message: 'Format d\'adresse email invalide. Veuillez entrer un email valide (ex: joueur@gmail.com).',
       });
       return;
+    }
+
+    const emailCheck = await verifyEmailAddress(cleanEmail);
+    if (!emailCheck.valid) {
+      res.status(400).json({
+        success: false,
+        message: emailCheck.reason || 'Cette adresse email est invalide ou son domaine n\'existe pas.',
+      });
+      return;
+    }
+
+    // Optional / Enforced OTP check if OTP is provided
+    if (otp) {
+      const otpCheck = OtpService.verifyOtp(cleanEmail, String(otp), 'register');
+      if (!otpCheck.valid) {
+        res.status(400).json({
+          success: false,
+          message: otpCheck.message || 'Code de vérification OTP incorrect ou expiré.',
+        });
+        return;
+      }
     }
 
     // Validation 3: Password strength
@@ -341,6 +574,22 @@ const handleMe = async (req: Request, res: Response): Promise<void> => {
 };
 
 // Route bindings with aliases for maximum compatibility across Netlify, Render, Railway, etc.
+app.post('/api/verify-email-domain', handleVerifyEmailDomain);
+app.post('/api/auth/verify-email-domain', handleVerifyEmailDomain);
+app.post('/.netlify/functions/verify-email-domain', handleVerifyEmailDomain);
+
+app.post('/api/send-register-otp', handleSendRegisterOtp);
+app.post('/api/auth/send-register-otp', handleSendRegisterOtp);
+app.post('/.netlify/functions/send-register-otp', handleSendRegisterOtp);
+
+app.post('/api/forgot-password-request', handleForgotPasswordRequest);
+app.post('/api/auth/forgot-password-request', handleForgotPasswordRequest);
+app.post('/.netlify/functions/forgot-password-request', handleForgotPasswordRequest);
+
+app.post('/api/forgot-password-reset', handleForgotPasswordReset);
+app.post('/api/auth/forgot-password-reset', handleForgotPasswordReset);
+app.post('/.netlify/functions/forgot-password-reset', handleForgotPasswordReset);
+
 app.post('/api/register', handleRegister);
 app.post('/api/auth/register', handleRegister);
 app.post('/api/user/register', handleRegister);
@@ -584,6 +833,9 @@ const handleDeposit = async (req: Request, res: Response): Promise<void> => {
     } catch (err) {}
   }
 
+  // Send official Brevo deposit invoice email
+  sendDepositInvoiceEmail(user, tx, newBalance);
+
   res.json({
     success: true,
     message: `Dépôt de ${numAmount.toLocaleString('fr-FR')} FCFA validé avec succès (Mode Démo / Test) ! Jeu débloqué.`,
@@ -645,6 +897,10 @@ const handlePaymentStatus = async (req: Request, res: Response): Promise<void> =
         }
 
         const freshUser = UserDatabase.findById(found.user.id);
+
+        // Send official Brevo deposit invoice email
+        sendDepositInvoiceEmail(found.user, found.transaction, newBalance);
+
         res.json({
           success: true,
           status: 'SUCCESS',
@@ -827,6 +1083,9 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
         } catch (err) {}
       }
 
+      // Send official Brevo withdrawal receipt email
+      sendWithdrawReceiptEmail(user, tx, newBalance);
+
       const updated = UserDatabase.findById(decoded.id);
       res.json({
         success: true,
@@ -881,6 +1140,9 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
       });
     } catch (err) {}
   }
+
+  // Send official Brevo withdrawal receipt email
+  sendWithdrawReceiptEmail(user, tx, newBalance);
 
   const updated = UserDatabase.findById(decoded.id);
   res.json({
@@ -970,6 +1232,9 @@ const handleSaspayWebhook = async (req: Request, res: Response): Promise<void> =
           } catch (err) {}
         }
         console.log(`[SasPay Webhook] Account ${found.user.id} credited with +${addedAmount} FCFA`);
+
+        // Send official Brevo deposit invoice email
+        sendDepositInvoiceEmail(found.user, { ...found.transaction, amount: addedAmount }, newBalance);
       }
     }
   } else if (event === 'transaction.failed' && data?.id) {

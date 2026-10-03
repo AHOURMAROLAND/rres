@@ -163,7 +163,6 @@ exports.handler = async (event) => {
     }
 
     // 2. Offline simulation fallback
-    const newBalance = Math.round((user.balance - numAmount) * 100) / 100;
     const updatedUser = updateUser(decoded.id, { balance: newBalance });
 
     const tx = {
