@@ -34,9 +34,6 @@ const SASPAY_API_URL = process.env.SASPAY_API_URL || 'https://api.saspay.me/api/
  * Returns true if SasPay API key is provided
  */
 export function isSaspayConfigured(): boolean {
-  if (process.env.PAYMENT_SIMULATION_MODE === 'true' || process.env.VITE_PAYMENT_SIMULATION_MODE === 'true') {
-    return false;
-  }
   return Boolean(process.env.SASPAY_API_KEY && process.env.SASPAY_API_KEY.trim() !== '');
 }
 

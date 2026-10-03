@@ -586,10 +586,12 @@ export default function App() {
   };
 
   // Account activation success callback
-  const handleActivateSuccess = () => {
-    const activatedUser = StorageService.activateAccount(3000);
-    setUser(activatedUser);
-    addToast('success', 'Compte Activé !', '3 000 FCFA offerts et crédités dans votre portefeuille.');
+  const handleActivateSuccess = (depositAmount: number = 1000) => {
+    const updatedUser = StorageService.updateBalance(depositAmount);
+    updatedUser.isActivated = true;
+    StorageService.saveUser(updatedUser);
+    setUser({ ...updatedUser });
+    addToast('success', 'Compte Activé !', `+${depositAmount.toLocaleString('fr-FR')} FCFA crédités dans votre portefeuille.`);
   };
 
   // Deposit success

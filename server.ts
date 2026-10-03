@@ -64,8 +64,8 @@ function sendWithdrawReceiptEmail(user: { email: string; name: string }, tx: any
 }
 
 // Configurable Business Rules
-const MIN_DEPOSIT_FCFA = Number(process.env.MIN_DEPOSIT_FCFA || 500);
-const MIN_WITHDRAW_FCFA = Number(process.env.MIN_WITHDRAW_FCFA || 1000);
+const MIN_DEPOSIT_FCFA = Number(process.env.MIN_DEPOSIT_FCFA || 1000);
+const MIN_WITHDRAW_FCFA = Number(process.env.MIN_WITHDRAW_FCFA || 2000);
 const PLATFORM_FEE_PERCENT = Number(process.env.PLATFORM_FEE_PERCENT || 0.025);
 
 // 1. Enable CORS for all origins, allowing frontend-backend communication across domains
@@ -716,133 +716,92 @@ const handleDeposit = async (req: Request, res: Response): Promise<void> => {
   const txId = 'tx_dep_' + Math.random().toString(36).substring(2, 9);
   const reference = 'DEP-' + Date.now().toString().slice(-6);
 
-  // 1. If SasPay is configured, initiate real payment on SasPay
-  if (isSaspayConfigured()) {
-    try {
-      const saspayResult = await createSaspayPayment({
-        amount: numAmount,
-        country: country || user.country || 'CI',
-        method,
-        customer: {
-          first_name: user.name.split(' ')[0] || 'Joueur',
-          last_name: user.name.split(' ').slice(1).join(' ') || 'AeroCrash',
-          email: user.email,
-          phone: cleanPhone,
-        },
-        description: `Dépôt AeroCrash ${numAmount.toLocaleString('fr-FR')} FCFA`,
-        returnUrl: `${process.env.APP_URL || ''}?payment=success&payment_id=`,
-        otp,
-      });
+  // Production Payment Processing
+  if (!isSaspayConfigured()) {
+    res.status(503).json({
+      success: false,
+      message: 'La passerelle de paiement sécurisée est temporairement indisponible. Veuillez réessayer ultérieurement.',
+    });
+    return;
+  }
 
-      if (!saspayResult.success || !saspayResult.paymentId) {
-        res.status(400).json({
-          success: false,
-          message: saspayResult.message || 'Échec de l\'initialisation du paiement sécurisé.',
-        });
-        return;
-      }
-
-      const tx = {
-        id: txId,
-        userId: decoded.id,
-        type: 'deposit',
-        amount: numAmount,
-        method,
+  try {
+    const saspayResult = await createSaspayPayment({
+      amount: numAmount,
+      country: country || user.country || 'CI',
+      method,
+      customer: {
+        first_name: user.name.split(' ')[0] || 'Joueur',
+        last_name: user.name.split(' ').slice(1).join(' ') || 'AeroCrash',
+        email: user.email,
         phone: cleanPhone,
-        reference,
-        status: 'pending',
-        timestamp: Date.now(),
-        saspayPaymentId: saspayResult.paymentId,
-        checkoutUrl: saspayResult.checkoutUrl,
-      };
+      },
+      description: `Dépôt AeroCrash ${numAmount.toLocaleString('fr-FR')} FCFA`,
+      returnUrl: `${process.env.APP_URL || ''}?payment=success&payment_id=`,
+      otp,
+    });
 
-      UserDatabase.addTransaction(decoded.id, tx);
-      if (isNeonConfigured()) {
-        try {
-          await NeonDatabase.addTransaction({
-            id: tx.id,
-            user_id: decoded.id,
-            type: 'deposit',
-            amount: numAmount,
-            currency: 'XOF',
-            method,
-            phone_number: cleanPhone,
-            reference,
-            status: 'pending',
-            saspay_payment_id: saspayResult.paymentId,
-            checkout_url: saspayResult.checkoutUrl,
-          });
-        } catch (err) {}
-      }
-
-      res.json({
-        success: true,
-        pending: true,
-        paymentId: saspayResult.paymentId,
-        checkoutUrl: saspayResult.checkoutUrl,
-        instructions: saspayResult.instructions,
-        message: saspayResult.checkoutUrl
-          ? 'Redirection vers la page de paiement sécurisée...'
-          : 'Demande envoyée sur votre téléphone. Veuillez valider avec votre code PIN secret.',
-        transaction: tx,
-      });
-      return;
-    } catch (err: any) {
-      console.error('Payment deposit error:', err);
-      res.status(500).json({
+    if (!saspayResult.success || !saspayResult.paymentId) {
+      res.status(400).json({
         success: false,
-        message: err?.message || 'Erreur lors de la communication avec la passerelle de paiement sécurisée.',
+        message: saspayResult.message || 'Échec de l\'initialisation du paiement sécurisé.',
       });
       return;
     }
+
+    const tx = {
+      id: txId,
+      userId: decoded.id,
+      type: 'deposit',
+      amount: numAmount,
+      method,
+      phone: cleanPhone,
+      reference,
+      status: 'pending',
+      timestamp: Date.now(),
+      saspayPaymentId: saspayResult.paymentId,
+      checkoutUrl: saspayResult.checkoutUrl,
+    };
+
+    UserDatabase.addTransaction(decoded.id, tx);
+    if (isNeonConfigured()) {
+      try {
+        await NeonDatabase.addTransaction({
+          id: tx.id,
+          user_id: decoded.id,
+          type: 'deposit',
+          amount: numAmount,
+          currency: 'XOF',
+          method,
+          phone_number: cleanPhone,
+          reference,
+          status: 'pending',
+          saspay_payment_id: saspayResult.paymentId,
+          checkout_url: saspayResult.checkoutUrl,
+        });
+      } catch (err) {}
+    }
+
+    res.json({
+      success: true,
+      pending: true,
+      paymentId: saspayResult.paymentId,
+      checkoutUrl: saspayResult.checkoutUrl,
+      instructions: saspayResult.instructions,
+      message: saspayResult.checkoutUrl
+        ? 'Redirection vers la page de paiement sécurisée...'
+        : 'Demande envoyée sur votre téléphone. Veuillez valider avec votre code PIN secret.',
+      transaction: tx,
+    });
+    return;
+  } catch (err: any) {
+    console.error('Payment deposit error:', err);
+    res.status(500).json({
+      success: false,
+      message: err?.message || 'Erreur lors de la communication avec la passerelle de paiement sécurisée.',
+    });
+    return;
   }
-
-  // 2. Offline / Simulation fallback if SASPAY_API_KEY is not configured
-  const newBalance = Math.round(((user.balance || 0) + numAmount) * 100) / 100;
-  const updated = UserDatabase.update(decoded.id, {
-    balance: newBalance,
-    isActivated: true,
-  });
-
-  const tx = {
-    id: txId,
-    userId: decoded.id,
-    type: 'deposit',
-    amount: numAmount,
-    method,
-    phone: cleanPhone,
-    reference,
-    status: 'success',
-    timestamp: Date.now(),
-  };
-  UserDatabase.addTransaction(decoded.id, tx);
-  if (isNeonConfigured()) {
-    try {
-      await NeonDatabase.updateBalance(decoded.id, newBalance, true);
-      await NeonDatabase.addTransaction({
-        id: tx.id,
-        user_id: decoded.id,
-        type: 'deposit',
-        amount: numAmount,
-        currency: 'XOF',
-        method,
-        phone_number: cleanPhone,
-        reference,
-        status: 'success',
-      });
-    } catch (err) {}
-  }
-
-  // Send official Brevo deposit invoice email
-  sendDepositInvoiceEmail(user, tx, newBalance);
-
-  res.json({
-    success: true,
-    message: `Dépôt de ${numAmount.toLocaleString('fr-FR')} FCFA validé avec succès (Mode Démo / Test) ! Jeu débloqué.`,
-    balance: newBalance,
-    user: updated ? sanitizeUser(updated) : null,
-    transaction: tx,
-  });
 };
 app.post('/api/user/deposit', handleDeposit);
 app.post('/.netlify/functions/deposit', handleDeposit);
@@ -855,18 +814,18 @@ const handlePaymentStatus = async (req: Request, res: Response): Promise<void> =
     return;
   }
 
-  // 1. If not configured, check existing transaction
+  // 1. If gateway is not configured, check existing local transaction
   if (!isSaspayConfigured()) {
     const found = UserDatabase.findBySaspayPaymentId(paymentId);
     if (found) {
       res.json({
         success: true,
-        status: found.transaction.status || 'SUCCESS',
+        status: found.transaction.status || 'PENDING',
         balance: found.user.balance,
       });
       return;
     }
-    res.json({ success: true, status: 'SUCCESS' });
+    res.status(404).json({ success: false, status: 'FAILED', message: 'Transaction introuvable' });
     return;
   }
 
@@ -1009,6 +968,14 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
   const txId = 'tx_wth_' + Math.random().toString(36).substring(2, 9);
   const reference = 'RET-' + Date.now().toString().slice(-6);
 
+  if (!isSaspayConfigured()) {
+    res.status(503).json({
+      success: false,
+      message: 'Le service de retrait sécurisé est temporairement indisponible. Veuillez réessayer ultérieurement.',
+    });
+    return;
+  }
+
   // Lock and deduct balance upfront
   const previousBalance = user.balance;
   const newBalance = Math.round((previousBalance - numAmount) * 100) / 100;
@@ -1020,138 +987,94 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
     } catch (err) {}
   }
 
-  // 1. If SasPay is configured, initiate real payout
-  if (isSaspayConfigured()) {
-    try {
-      const payoutRes = await createSaspayPayout({
-        amount: numAmount,
-        country: country || user.country || 'CI',
-        method,
+  try {
+    const payoutRes = await createSaspayPayout({
+      amount: numAmount,
+      country: country || user.country || 'CI',
+      method,
+      phone: cleanPhone,
+      customer: {
+        first_name: user.name.split(' ')[0] || 'Joueur',
+        last_name: user.name.split(' ').slice(1).join(' ') || 'AeroCrash',
+        email: user.email,
         phone: cleanPhone,
-        customer: {
-          first_name: user.name.split(' ')[0] || 'Joueur',
-          last_name: user.name.split(' ').slice(1).join(' ') || 'AeroCrash',
-          email: user.email,
-          phone: cleanPhone,
-        },
-        description: `Retrait gains AeroCrash ${numAmount.toLocaleString('fr-FR')} FCFA`,
-      });
+      },
+      description: `Retrait gains AeroCrash ${numAmount.toLocaleString('fr-FR')} FCFA`,
+    });
 
-      if (!payoutRes.success) {
-        // Rollback balance on gateway rejection
-        UserDatabase.update(decoded.id, { balance: previousBalance });
-        if (isNeonConfigured()) {
-          try {
-            await NeonDatabase.updateBalance(decoded.id, previousBalance);
-          } catch (err) {}
-        }
-        res.status(400).json({
-          success: false,
-          message: payoutRes.message || 'Échec de l\'envoi du retrait. Vos fonds ont été recrédités sur votre solde.',
-        });
-        return;
-      }
-
-      const tx = {
-        id: txId,
-        userId: decoded.id,
-        type: 'withdraw',
-        amount: numAmount,
-        method,
-        phone: cleanPhone,
-        reference,
-        status: 'pending',
-        timestamp: Date.now(),
-        saspayPayoutId: payoutRes.payoutId,
-      };
-      UserDatabase.addTransaction(decoded.id, tx);
-
-      if (isNeonConfigured()) {
-        try {
-          await NeonDatabase.addTransaction({
-            id: tx.id,
-            user_id: decoded.id,
-            type: 'withdraw',
-            amount: numAmount,
-            currency: 'XOF',
-            method,
-            phone_number: cleanPhone,
-            reference,
-            status: 'pending',
-            saspay_payout_id: payoutRes.payoutId,
-          });
-        } catch (err) {}
-      }
-
-      // Send official Brevo withdrawal receipt email
-      sendWithdrawReceiptEmail(user, tx, newBalance);
-
-      const updated = UserDatabase.findById(decoded.id);
-      res.json({
-        success: true,
-        message: `Demande de retrait de ${numAmount.toLocaleString('fr-FR')} FCFA transférée vers votre compte Mobile Money.`,
-        balance: newBalance,
-        user: updated ? sanitizeUser(updated) : null,
-        transaction: tx,
-      });
-      return;
-    } catch (err: any) {
-      console.error('SasPay payout error:', err);
-      // Rollback balance
+    if (!payoutRes.success) {
+      // Rollback balance on gateway rejection
       UserDatabase.update(decoded.id, { balance: previousBalance });
       if (isNeonConfigured()) {
         try {
           await NeonDatabase.updateBalance(decoded.id, previousBalance);
-        } catch (rErr) {}
+        } catch (err) {}
       }
-      res.status(500).json({
+      res.status(400).json({
         success: false,
-        message: err?.message || 'Erreur lors du traitement du retrait. Solde restauré.',
+        message: payoutRes.message || 'Échec de l\'envoi du retrait. Vos fonds ont été recrédités sur votre solde.',
       });
       return;
     }
+
+    const tx = {
+      id: txId,
+      userId: decoded.id,
+      type: 'withdraw',
+      amount: numAmount,
+      method,
+      phone: cleanPhone,
+      reference,
+      status: 'pending',
+      timestamp: Date.now(),
+      saspayPayoutId: payoutRes.payoutId,
+    };
+    UserDatabase.addTransaction(decoded.id, tx);
+
+    if (isNeonConfigured()) {
+      try {
+        await NeonDatabase.addTransaction({
+          id: tx.id,
+          user_id: decoded.id,
+          type: 'withdraw',
+          amount: numAmount,
+          currency: 'XOF',
+          method,
+          phone_number: cleanPhone,
+          reference,
+          status: 'pending',
+          saspay_payout_id: payoutRes.payoutId,
+        });
+      } catch (err) {}
+    }
+
+    // Send official Brevo withdrawal receipt email
+    sendWithdrawReceiptEmail(user, tx, newBalance);
+
+    const updated = UserDatabase.findById(decoded.id);
+    res.json({
+      success: true,
+      message: `Demande de retrait de ${numAmount.toLocaleString('fr-FR')} FCFA transférée vers votre compte Mobile Money.`,
+      balance: newBalance,
+      user: updated ? sanitizeUser(updated) : null,
+      transaction: tx,
+    });
+    return;
+  } catch (err: any) {
+    console.error('SasPay payout error:', err);
+    // Rollback balance
+    UserDatabase.update(decoded.id, { balance: previousBalance });
+    if (isNeonConfigured()) {
+      try {
+        await NeonDatabase.updateBalance(decoded.id, previousBalance);
+      } catch (rErr) {}
+    }
+    res.status(500).json({
+      success: false,
+      message: err?.message || 'Erreur lors du traitement du retrait. Solde restauré.',
+    });
+    return;
   }
-
-  // 2. Offline simulation fallback
-  const tx = {
-    id: txId,
-    userId: decoded.id,
-    type: 'withdraw',
-    amount: numAmount,
-    method,
-    phone: cleanPhone,
-    reference,
-    status: 'success',
-    timestamp: Date.now(),
-  };
-  UserDatabase.addTransaction(decoded.id, tx);
-  if (isNeonConfigured()) {
-    try {
-      await NeonDatabase.addTransaction({
-        id: tx.id,
-        user_id: decoded.id,
-        type: 'withdraw',
-        amount: numAmount,
-        currency: 'XOF',
-        method,
-        phone_number: cleanPhone,
-        reference,
-        status: 'success',
-      });
-    } catch (err) {}
-  }
-
-  // Send official Brevo withdrawal receipt email
-  sendWithdrawReceiptEmail(user, tx, newBalance);
-
-  const updated = UserDatabase.findById(decoded.id);
-  res.json({
-    success: true,
-    message: `Retrait de ${numAmount.toLocaleString('fr-FR')} FCFA transféré vers votre compte Mobile Money.`,
-    balance: newBalance,
-    user: updated ? sanitizeUser(updated) : null,
-    transaction: tx,
-  });
 };
 app.post('/api/user/withdraw', handleWithdraw);
 app.post('/.netlify/functions/withdraw', handleWithdraw);

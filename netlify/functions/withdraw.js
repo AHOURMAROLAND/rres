@@ -53,11 +53,11 @@ exports.handler = async (event) => {
     const numAmount = Number(amount);
 
     const MAX_WITHDRAW = 500000;
-    if (!numAmount || isNaN(numAmount) || numAmount < 1000) {
+    if (!numAmount || isNaN(numAmount) || numAmount < 2000) {
       return {
         statusCode: 400,
         headers: corsHeaders,
-        body: JSON.stringify({ success: false, message: 'Le montant minimum de retrait est de 1 000 FCFA.' }),
+        body: JSON.stringify({ success: false, message: 'Le montant minimum de retrait est de 2 000 FCFA.' }),
       };
     }
 
@@ -86,6 +86,17 @@ exports.handler = async (event) => {
       };
     }
 
+    if (!isSaspayConfigured()) {
+      return {
+        statusCode: 503,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          success: false,
+          message: 'Le service de retrait sécurisé est temporairement indisponible. Veuillez réessayer plus tard.',
+        }),
+      };
+    }
+
     const txId = 'tx_wth_' + Date.now();
     const reference = 'RET-' + Math.floor(100000 + Math.random() * 900000);
     const previousBalance = user.balance;
@@ -94,100 +105,70 @@ exports.handler = async (event) => {
     // Deduct upfront
     updateUser(decoded.id, { balance: newBalance });
 
-    // 1. If SasPay is configured, initiate payout
-    if (isSaspayConfigured()) {
-      try {
-        const payoutRes = await createSaspayPayout({
-          amount: numAmount,
-          country: country || user.country || 'CI',
-          method,
+    try {
+      const payoutRes = await createSaspayPayout({
+        amount: numAmount,
+        country: country || user.country || 'CI',
+        method,
+        phone: cleanPhone,
+        customer: {
           phone: cleanPhone,
-          customer: {
-            phone: cleanPhone,
-            first_name: user.name ? user.name.split(' ')[0] : 'Gagnant',
-            last_name: user.name ? user.name.split(' ').slice(1).join(' ') : 'AeroCrash',
-            email: user.email,
-          },
-          description: `Retrait gains AeroCrash ${numAmount.toLocaleString('fr-FR')} FCFA`,
-        });
+          first_name: user.name ? user.name.split(' ')[0] : 'Gagnant',
+          last_name: user.name ? user.name.split(' ').slice(1).join(' ') : 'AeroCrash',
+          email: user.email,
+        },
+        description: `Retrait gains AeroCrash ${numAmount.toLocaleString('fr-FR')} FCFA`,
+      });
 
-        if (!payoutRes.success) {
-          // Rollback on rejection
-          updateUser(decoded.id, { balance: previousBalance });
-          return {
-            statusCode: 400,
-            headers: corsHeaders,
-            body: JSON.stringify({
-              success: false,
-              message: payoutRes.message || 'Échec de l\'envoi du retrait. Vos fonds restent sur votre solde.',
-            }),
-          };
-        }
-
-        const tx = {
-          id: txId,
-          userId: decoded.id,
-          type: 'withdraw',
-          amount: numAmount,
-          method,
-          phone: cleanPhone,
-          reference,
-          status: 'pending',
-          timestamp: Date.now(),
-          saspayPayoutId: payoutRes.payoutId,
-        };
-        addTransaction(decoded.id, tx);
-
-        const freshUser = findById(decoded.id);
-        return {
-          statusCode: 200,
-          headers: corsHeaders,
-          body: JSON.stringify({
-            success: true,
-            message: `Demande de retrait de ${numAmount.toLocaleString('fr-FR')} FCFA transférée vers votre compte Mobile Money.`,
-            balance: newBalance,
-            user: sanitizeUser(freshUser),
-            transaction: tx,
-          }),
-        };
-      } catch (err) {
-        console.error('SasPay payout error in Netlify:', err);
-        // Rollback on exception
+      if (!payoutRes.success) {
+        // Rollback on rejection
         updateUser(decoded.id, { balance: previousBalance });
         return {
-          statusCode: 500,
+          statusCode: 400,
           headers: corsHeaders,
-          body: JSON.stringify({ success: false, message: 'Erreur lors du traitement du retrait. Solde restauré.' }),
+          body: JSON.stringify({
+            success: false,
+            message: payoutRes.message || 'Échec de l\'envoi du retrait. Vos fonds restent sur votre solde.',
+          }),
         };
       }
+
+      const tx = {
+        id: txId,
+        userId: decoded.id,
+        type: 'withdraw',
+        amount: numAmount,
+        method,
+        phone: cleanPhone,
+        reference,
+        status: 'pending',
+        timestamp: Date.now(),
+        saspayPayoutId: payoutRes.payoutId,
+      };
+      addTransaction(decoded.id, tx);
+
+      const freshUser = findById(decoded.id);
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          success: true,
+          message: `Demande de retrait de ${numAmount.toLocaleString('fr-FR')} FCFA transférée vers votre compte Mobile Money.`,
+          balance: newBalance,
+          user: sanitizeUser(freshUser),
+          transaction: tx,
+        }),
+      };
+    } catch (err) {
+      console.error('Withdraw payout error in Netlify:', err);
+      // Rollback on exception
+      updateUser(decoded.id, { balance: previousBalance });
+      return {
+        statusCode: 500,
+        headers: corsHeaders,
+        body: JSON.stringify({ success: false, message: 'Erreur lors du traitement du retrait. Solde restauré.' }),
+      };
     }
-
-    // 2. Offline simulation fallback
-    const updatedUser = updateUser(decoded.id, { balance: newBalance });
-
-    const tx = {
-      id: txId,
-      type: 'withdraw',
-      amount: numAmount,
-      method,
-      phone: cleanPhone,
-      reference,
-      status: 'success',
-      timestamp: Date.now(),
-    };
-    addTransaction(decoded.id, tx);
-
-    return {
-      statusCode: 200,
-      headers: corsHeaders,
-      body: JSON.stringify({
-        success: true,
-        message: `Retrait de ${numAmount.toLocaleString('fr-FR')} FCFA transféré avec succès vers votre compte Mobile Money.`,
-        balance: newBalance,
-        user: sanitizeUser(updatedUser),
-        transaction: tx,
-      }),
-    };
   } catch (error) {
     console.error('Netlify withdraw error:', error);
     return {

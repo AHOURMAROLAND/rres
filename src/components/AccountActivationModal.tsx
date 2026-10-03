@@ -1,14 +1,15 @@
 import React, { useState } from 'react';
-import { X, CheckCircle2, ShieldCheck, Smartphone, CreditCard, Sparkles, ArrowRight, Loader2, Receipt, FileText } from 'lucide-react';
+import { X, CheckCircle2, ShieldCheck, Smartphone, Sparkles, ArrowRight, Loader2, Receipt, FileText, AlertCircle } from 'lucide-react';
 import { PaymentMethod, User } from '../types';
 import { soundManager } from '../services/sound';
+import { AuthApi } from '../services/authApi';
 import { PaymentLogo } from './PaymentLogos';
 import { TransactionReceiptModal } from './TransactionReceiptModal';
 
 interface AccountActivationModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onActivateSuccess: () => void;
+  onActivateSuccess: (amount?: number) => void;
   user: User;
 }
 
@@ -19,28 +20,93 @@ export const AccountActivationModal: React.FC<AccountActivationModalProps> = ({
   user,
 }) => {
   const [method, setMethod] = useState<PaymentMethod>('wave');
-  const [phoneNumber, setPhoneNumber] = useState<string>(user.phoneOrEmail || '07 48 92 10 33');
+  const [phoneNumber, setPhoneNumber] = useState<string>(user.phoneOrEmail || '');
   const [countryCode, setCountryCode] = useState<string>('+225');
   const [step, setStep] = useState<'form' | 'processing' | 'success'>('form');
   const [txRef, setTxRef] = useState<string>('');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [checkoutUrl, setCheckoutUrl] = useState<string | null>(null);
+  const [instructions, setInstructions] = useState<string | null>(null);
   const [isReceiptOpen, setIsReceiptOpen] = useState(false);
 
   if (!isOpen) return null;
 
-  const handleStartPayment = (e: React.FormEvent) => {
+  const getCountryIso = (dial: string): string => {
+    switch (dial) {
+      case '+225': return 'CI';
+      case '+221': return 'SN';
+      case '+223': return 'ML';
+      case '+226': return 'BF';
+      case '+228': return 'TG';
+      case '+229': return 'BJ';
+      case '+237': return 'CM';
+      default: return 'CI';
+    }
+  };
+
+  const handleStartPayment = async (e: React.FormEvent) => {
     e.preventDefault();
     soundManager.playClick();
+    setErrorMessage(null);
+
+    if (method !== 'card' && (!phoneNumber || phoneNumber.trim().length < 6)) {
+      setErrorMessage('Veuillez renseigner un numéro de téléphone Mobile Money valide.');
+      return;
+    }
+
     setStep('processing');
+    const fullPhone = phoneNumber.trim().startsWith('+') ? phoneNumber.trim() : `${countryCode} ${phoneNumber.trim()}`;
+    const country = getCountryIso(countryCode);
 
-    const generatedRef = 'ACT-' + Math.floor(100000 + Math.random() * 900000);
-    setTxRef(generatedRef);
+    try {
+      const res = await AuthApi.deposit(1000, method, fullPhone, country);
 
-    // Simulate realistic mobile money validation
-    setTimeout(() => {
+      if (!res.success) {
+        setStep('form');
+        setErrorMessage(res.message || 'Échec de l\'initialisation du paiement sécurisé. Veuillez réessayer.');
+        return;
+      }
+
+      const generatedRef = (res as any).transaction?.reference || ('ACT-' + Math.floor(100000 + Math.random() * 900000));
+      setTxRef(generatedRef);
+
+      if (res.pending && res.paymentId) {
+        if (res.checkoutUrl) {
+          setCheckoutUrl(res.checkoutUrl);
+          window.open(res.checkoutUrl, '_blank', 'noopener,noreferrer');
+        }
+        if (res.instructions) {
+          setInstructions(res.instructions);
+        }
+        // Background polling for payment status
+        const pollId = setInterval(async () => {
+          try {
+            const check = await AuthApi.checkPaymentStatus(res.paymentId!);
+            if (check.success && check.status === 'SUCCESS') {
+              clearInterval(pollId);
+              soundManager.playCashout();
+              setStep('success');
+              onActivateSuccess(1000);
+            } else if (check.status === 'FAILED' || check.status === 'CANCELLED') {
+              clearInterval(pollId);
+              setStep('form');
+              setErrorMessage('Le paiement a été rejeté ou annulé.');
+            }
+          } catch {
+            // keep polling
+          }
+        }, 3500);
+        return;
+      }
+
+      // Completed immediately
       soundManager.playCashout();
       setStep('success');
-      onActivateSuccess();
-    }, 2400);
+      onActivateSuccess(1000);
+    } catch {
+      setStep('form');
+      setErrorMessage('Erreur réseau lors de la communication avec le service de paiement sécurisé.');
+    }
   };
 
   const getMethodName = (m: PaymentMethod) => {
@@ -50,6 +116,7 @@ export const AccountActivationModal: React.FC<AccountActivationModalProps> = ({
       case 'mtn': return 'MTN MoMo';
       case 'moov': return 'Moov Money';
       case 'card': return 'Carte Bancaire Visa / Mastercard';
+      default: return 'Mobile Money';
     }
   };
 
@@ -67,7 +134,7 @@ export const AccountActivationModal: React.FC<AccountActivationModalProps> = ({
                 Activation du Compte
               </h2>
               <p className="text-xs text-slate-400">
-                Paiement unique de sécurité • Accès jeu illimité
+                Premier dépôt de sécurité • Accès jeu illimité
               </p>
             </div>
           </div>
@@ -82,6 +149,13 @@ export const AccountActivationModal: React.FC<AccountActivationModalProps> = ({
 
         {/* Content Body based on step */}
         <div className="p-4 sm:p-6 overflow-y-auto">
+          {errorMessage && (
+            <div className="mb-4 p-3 bg-red-950/40 border border-red-800/80 rounded-xl text-xs text-red-300 flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+              <span>{errorMessage}</span>
+            </div>
+          )}
+
           {step === 'form' && (
             <form onSubmit={handleStartPayment} className="space-y-4">
               {/* Value proposition pill */}
@@ -89,10 +163,10 @@ export const AccountActivationModal: React.FC<AccountActivationModalProps> = ({
                 <Sparkles className="w-5 h-5 text-orange-400 shrink-0 mt-0.5" />
                 <div className="text-xs text-slate-300 space-y-1">
                   <div className="font-bold text-white text-sm">
-                    Frais d'activation : <span className="text-orange-400 font-mono-num font-black">2 000 FCFA</span>
+                    Premier Dépôt d'Activation : <span className="text-orange-400 font-mono-num font-black">1 000 FCFA</span>
                   </div>
                   <p className="text-slate-300 text-[11px] leading-relaxed">
-                    L'activation est nécessaire pour sécuriser les retraits et valider l'accès au multiplicateur en direct. En cadeau d'accueil, un solde de <strong className="text-emerald-400">3 000 FCFA</strong> est immédiatement crédité dans votre portefeuille !
+                    L'activation valide votre accès aux parties en argent réel. Votre premier dépôt de <strong className="text-emerald-400">1 000 FCFA</strong> est immédiatement crédité dans votre portefeuille pour jouer !
                   </p>
                 </div>
               </div>
@@ -244,12 +318,12 @@ export const AccountActivationModal: React.FC<AccountActivationModalProps> = ({
                 type="submit"
                 className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-orange-600 via-orange-500 to-amber-500 hover:from-orange-500 hover:to-amber-400 text-white font-display font-black text-base shadow-xl shadow-orange-600/30 flex items-center justify-center gap-2 cursor-pointer active:scale-98 transition-all"
               >
-                <span>Payer 2 000 FCFA & Activer</span>
+                <span>Déposer 1 000 FCFA & Activer mon Compte</span>
                 <ArrowRight className="w-4 h-4" />
               </button>
 
               <p className="text-center text-[11px] text-slate-400">
-                Paiement instantané simulé pour démonstration. Vous recevrez une validation instantanée.
+                Paiement 100% sécurisé avec chiffrement SSL 256-bit. Vos 1 000 FCFA sont utilisables directement sur vos paris.
               </p>
             </form>
           )}
@@ -263,12 +337,29 @@ export const AccountActivationModal: React.FC<AccountActivationModalProps> = ({
 
               <div>
                 <h3 className="font-display font-bold text-lg text-white">
-                  Validation de la transaction en cours...
+                  Paiement sécurisé en cours...
                 </h3>
                 <p className="text-xs text-slate-400 mt-1 max-w-xs mx-auto">
-                  Veuillez vérifier votre téléphone <span className="font-mono-num font-semibold text-slate-200">{countryCode} {phoneNumber}</span> et valider la demande de 2 000 FCFA.
+                  Veuillez vérifier votre téléphone <span className="font-mono-num font-semibold text-slate-200">{countryCode} {phoneNumber}</span> et valider avec votre code PIN secret.
                 </p>
               </div>
+
+              {instructions && (
+                <div className="p-3 bg-amber-950/40 border border-amber-600/40 rounded-xl text-xs text-amber-200 max-w-sm">
+                  {instructions}
+                </div>
+              )}
+
+              {checkoutUrl && (
+                <a
+                  href={checkoutUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-white font-bold text-xs rounded-xl shadow-lg transition-all"
+                >
+                  Ouvrir la page de paiement sécurisée &rarr;
+                </a>
+              )}
 
               <div className="w-full max-w-xs bg-slate-800 rounded-full h-1.5 overflow-hidden">
                 <div className="bg-orange-500 h-full w-2/3 animate-pulse rounded-full" />
@@ -307,12 +398,12 @@ export const AccountActivationModal: React.FC<AccountActivationModalProps> = ({
                   <span className="text-white capitalize">{getMethodName(method)}</span>
                 </div>
                 <div className="flex justify-between py-1 text-slate-400">
-                  <span>Montant Débité :</span>
-                  <span className="text-orange-400 font-bold">2 000 FCFA</span>
+                  <span>Montant Déposé :</span>
+                  <span className="text-orange-400 font-bold">1 000 FCFA</span>
                 </div>
                 <div className="flex justify-between py-1 text-slate-400">
-                  <span>Solde de Bienvenue Offert :</span>
-                  <span className="text-emerald-400 font-bold">+3 000 FCFA</span>
+                  <span>Nouveau Solde :</span>
+                  <span className="text-emerald-400 font-bold">1 000 FCFA</span>
                 </div>
                 <div className="flex justify-between py-1 text-slate-400 pt-1 border-t border-slate-800">
                   <span>Statut :</span>
@@ -347,14 +438,14 @@ export const AccountActivationModal: React.FC<AccountActivationModalProps> = ({
         isOpen={isReceiptOpen}
         onClose={() => setIsReceiptOpen(false)}
         transaction={{
-          amount: 2000,
+          amount: 1000,
           reference: txRef,
           method,
           phoneNumber,
-          type: 'activation',
+          type: 'deposit',
           status: 'success',
           timestamp: Date.now(),
-          balance: (user.balance || 0) + 3000,
+          balance: (user.balance || 0) + 1000,
         }}
         user={user}
       />

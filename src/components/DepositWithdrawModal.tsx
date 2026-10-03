@@ -45,7 +45,8 @@ interface MethodOption {
   badge?: string;
 }
 
-const PRESET_AMOUNTS = [1000, 2000, 5000, 10000, 25000];
+const PRESET_AMOUNTS_DEPOSIT = [1000, 2000, 5000, 10000, 25000];
+const PRESET_AMOUNTS_WITHDRAW = [2000, 5000, 10000, 25000, 50000];
 
 function getPaymentMethodsForCountry(countryCode: string): MethodOption[] {
   const code = (countryCode || 'CI').toUpperCase().trim();
@@ -192,9 +193,14 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
     setErrorMessage(null);
     setSuccessMessage(null);
     setOtp('');
+    if (newTab === 'withdraw' && amount < 2000) {
+      setAmount(2000);
+    } else if (newTab === 'deposit' && amount < 1000) {
+      setAmount(1000);
+    }
   };
 
-  // Start polling status for pending SasPay payments
+  // Start polling status for pending payments
   const startStatusPolling = (paymentId: string, depositAmount: number, payMethod: PaymentMethod, depositPhone: string) => {
     stopPolling();
 
@@ -264,8 +270,9 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
     setSuccessMessage(null);
 
     const cleanAmount = Number(amount);
-    if (isNaN(cleanAmount) || cleanAmount < 500) {
-      setErrorMessage('Le montant minimum pour cette opération est de 500 FCFA.');
+    const minAmount = tab === 'deposit' ? 1000 : 2000;
+    if (isNaN(cleanAmount) || cleanAmount < minAmount) {
+      setErrorMessage(`Le montant minimum pour un ${tab === 'deposit' ? 'dépôt' : 'retrait'} est de ${minAmount.toLocaleString('fr-FR')} FCFA.`);
       return;
     }
 
@@ -639,7 +646,7 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
                 <div className="relative">
                   <input
                     type="number"
-                    min={500}
+                    min={tab === 'deposit' ? 1000 : 2000}
                     max={1000000}
                     step={100}
                     required
@@ -654,7 +661,7 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
 
                 {/* Quick preset buttons */}
                 <div className="grid grid-cols-5 gap-1.5 mt-2">
-                  {PRESET_AMOUNTS.map((p) => (
+                  {(tab === 'deposit' ? PRESET_AMOUNTS_DEPOSIT : PRESET_AMOUNTS_WITHDRAW).map((p) => (
                     <button
                       key={p}
                       type="button"

@@ -35,11 +35,11 @@ exports.handler = async (event) => {
     const { amount, method = 'wave', phone, country, otp } = body;
 
     const numAmount = Number(amount);
-    if (!numAmount || isNaN(numAmount) || numAmount < 500) {
+    if (!numAmount || isNaN(numAmount) || numAmount < 1000) {
       return {
         statusCode: 400,
         headers: corsHeaders,
-        body: JSON.stringify({ success: false, message: 'Le montant minimum de dépôt est de 500 FCFA.' }),
+        body: JSON.stringify({ success: false, message: 'Le montant minimum de dépôt est de 1 000 FCFA.' }),
       };
     }
 
@@ -52,113 +52,85 @@ exports.handler = async (event) => {
       user = findById(decoded.id);
     }
 
-    // 1. If SasPay is configured, initiate real transaction
-    if (isSaspayConfigured()) {
-      try {
-        const saspayRes = await createSaspayPayment({
-          amount: numAmount,
-          country: country || user?.country || 'CI',
-          method,
-          customer: {
-            first_name: user?.name ? user.name.split(' ')[0] : 'Joueur',
-            last_name: user?.name ? user.name.split(' ').slice(1).join(' ') : 'AeroCrash',
-            email: user?.email || 'joueur@aerocrash.live',
-            phone: cleanPhone,
-          },
-          description: `Dépôt AeroCrash ${numAmount.toLocaleString('fr-FR')} FCFA`,
-          returnUrl: `${process.env.APP_URL || ''}?payment=success&payment_id=`,
-          otp,
-        });
+    if (!isSaspayConfigured()) {
+      return {
+        statusCode: 503,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          success: false,
+          message: 'La passerelle de paiement sécurisée est temporairement indisponible. Veuillez réessayer plus tard.',
+        }),
+      };
+    }
 
-        if (!saspayRes.success || !saspayRes.paymentId) {
-          return {
-            statusCode: 400,
-            headers: corsHeaders,
-            body: JSON.stringify({
-              success: false,
-              message: saspayRes.message || 'Échec de l\'initialisation du paiement SasPay.',
-            }),
-          };
-        }
-
-        const tx = {
-          id: txId,
-          userId: decoded?.id || '',
-          type: 'deposit',
-          amount: numAmount,
-          method,
+    try {
+      const saspayRes = await createSaspayPayment({
+        amount: numAmount,
+        country: country || user?.country || 'CI',
+        method,
+        customer: {
+          first_name: user?.name ? user.name.split(' ')[0] : 'Joueur',
+          last_name: user?.name ? user.name.split(' ').slice(1).join(' ') : 'AeroCrash',
+          email: user?.email || 'joueur@aerocrash.live',
           phone: cleanPhone,
-          reference,
-          status: 'pending',
-          timestamp: Date.now(),
-          saspayPaymentId: saspayRes.paymentId,
-          checkoutUrl: saspayRes.checkoutUrl,
-        };
+        },
+        description: `Dépôt AeroCrash ${numAmount.toLocaleString('fr-FR')} FCFA`,
+        returnUrl: `${process.env.APP_URL || ''}?payment=success&payment_id=`,
+        otp,
+      });
 
-        if (decoded?.id) {
-          addTransaction(decoded.id, tx);
-        }
-
+      if (!saspayRes.success || !saspayRes.paymentId) {
         return {
-          statusCode: 200,
+          statusCode: 400,
           headers: corsHeaders,
           body: JSON.stringify({
-            success: true,
-            pending: true,
-            paymentId: saspayRes.paymentId,
-            checkoutUrl: saspayRes.checkoutUrl,
-            instructions: saspayRes.instructions,
-            message: saspayRes.checkoutUrl
-              ? 'Redirection vers la page de paiement sécurisée SasPay...'
-              : 'Demande envoyée sur votre téléphone. Veuillez valider avec votre code PIN secret.',
-            transaction: tx,
+            success: false,
+            message: saspayRes.message || 'Échec de l\'initialisation du paiement sécurisé.',
           }),
         };
-      } catch (err) {
-        console.error('SasPay deposit error in Netlify function:', err);
-        return {
-          statusCode: 500,
-          headers: corsHeaders,
-          body: JSON.stringify({ success: false, message: 'Erreur lors de la communication avec SasPay.' }),
-        };
       }
+
+      const tx = {
+        id: txId,
+        userId: decoded?.id || '',
+        type: 'deposit',
+        amount: numAmount,
+        method,
+        phone: cleanPhone,
+        reference,
+        status: 'pending',
+        timestamp: Date.now(),
+        saspayPaymentId: saspayRes.paymentId,
+        checkoutUrl: saspayRes.checkoutUrl,
+      };
+
+      if (decoded?.id) {
+        addTransaction(decoded.id, tx);
+      }
+
+      return {
+        statusCode: 200,
+        headers: corsHeaders,
+        body: JSON.stringify({
+          success: true,
+          pending: true,
+          paymentId: saspayRes.paymentId,
+          checkoutUrl: saspayRes.checkoutUrl,
+          instructions: saspayRes.instructions,
+          message: saspayRes.checkoutUrl
+            ? 'Redirection vers la page de paiement sécurisée...'
+            : 'Demande envoyée sur votre téléphone. Veuillez valider avec votre code PIN secret.',
+          transaction: tx,
+        }),
+      };
+    } catch (err) {
+      console.error('Payment deposit error in Netlify function:', err);
+      return {
+        statusCode: 500,
+        headers: corsHeaders,
+        body: JSON.stringify({ success: false, message: 'Erreur lors de la communication avec la passerelle de paiement sécurisée.' }),
+      };
     }
-
-    // 2. Offline simulation fallback
-    const tx = {
-      id: txId,
-      type: 'deposit',
-      amount: numAmount,
-      method,
-      phone: cleanPhone,
-      reference,
-      status: 'success',
-      timestamp: Date.now(),
-    };
-
-    let updatedUser = null;
-    let newBalance = numAmount;
-
-    if (decoded && decoded.id && user) {
-      newBalance = Math.round(((user.balance || 0) + numAmount) * 100) / 100;
-      updatedUser = updateUser(decoded.id, {
-        balance: newBalance,
-        isActivated: true,
-      });
-      addTransaction(decoded.id, tx);
-    }
-
-    return {
-      statusCode: 200,
-      headers: corsHeaders,
-      body: JSON.stringify({
-        success: true,
-        message: `Dépôt de ${numAmount.toLocaleString('fr-FR')} FCFA validé avec succès (Mode Simulation) ! Jeu débloqué.`,
-        balance: newBalance,
-        user: sanitizeUser(updatedUser),
-        transaction: tx,
-      }),
-    };
   } catch (error) {
     console.error('Netlify deposit error:', error);
     return {
