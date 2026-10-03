@@ -175,7 +175,7 @@ export function getPaymentMethodDetails(method: PaymentMethod | string): {
   if (m.includes('airtel')) return { name: 'Airtel Money', color: '#FF0000', operator: 'Airtel' };
   if (m.includes('vodacom') || m.includes('mpesa')) return { name: 'Vodacom M-Pesa', color: '#E60000', operator: 'Vodacom' };
   if (m.includes('wizall')) return { name: 'Wizall Money', color: '#4A154B', operator: 'Wizall' };
-  if (m.includes('card') || m.includes('carte')) return { name: 'Carte Bancaire (Visa / Mastercard)', color: '#1E293B', operator: 'SasPay Card' };
+  if (m.includes('card') || m.includes('carte')) return { name: 'Carte Bancaire (Visa / Mastercard)', color: '#1E293B', operator: 'Carte Bancaire' };
   if (m.includes('crypto') || m.includes('usdt')) return { name: 'Crypto USDT (Tether)', color: '#26A17B', operator: 'Tether' };
-  return { name: 'Paiement Mobile Money', color: '#F97316', operator: 'SasPay' };
+  return { name: 'Paiement Mobile Money', color: '#F97316', operator: 'Mobile Money' };
 }

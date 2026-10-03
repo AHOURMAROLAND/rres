@@ -737,7 +737,7 @@ const handleDeposit = async (req: Request, res: Response): Promise<void> => {
       if (!saspayResult.success || !saspayResult.paymentId) {
         res.status(400).json({
           success: false,
-          message: saspayResult.message || 'Échec de l\'initialisation du paiement SasPay.',
+          message: saspayResult.message || 'Échec de l\'initialisation du paiement sécurisé.',
         });
         return;
       }
@@ -782,16 +782,16 @@ const handleDeposit = async (req: Request, res: Response): Promise<void> => {
         checkoutUrl: saspayResult.checkoutUrl,
         instructions: saspayResult.instructions,
         message: saspayResult.checkoutUrl
-          ? 'Redirection vers la page de paiement sécurisée SasPay...'
+          ? 'Redirection vers la page de paiement sécurisée...'
           : 'Demande envoyée sur votre téléphone. Veuillez valider avec votre code PIN secret.',
         transaction: tx,
       });
       return;
     } catch (err: any) {
-      console.error('SasPay deposit error:', err);
+      console.error('Payment deposit error:', err);
       res.status(500).json({
         success: false,
-        message: err?.message || 'Erreur lors de la communication avec SasPay.',
+        message: err?.message || 'Erreur lors de la communication avec la passerelle de paiement sécurisée.',
       });
       return;
     }
@@ -934,7 +934,7 @@ const handlePaymentStatus = async (req: Request, res: Response): Promise<void> =
       message: verifyRes.message,
     });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err?.message || 'Erreur vérification SasPay' });
+    res.status(500).json({ success: false, message: err?.message || 'Erreur lors de la vérification du paiement' });
   }
 };
 app.get('/api/user/payment-status/:paymentId', handlePaymentStatus);
@@ -1047,7 +1047,7 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
         }
         res.status(400).json({
           success: false,
-          message: payoutRes.message || 'Échec de l\'envoi du retrait via SasPay. Vos fonds ont été recrédités sur votre solde.',
+          message: payoutRes.message || 'Échec de l\'envoi du retrait. Vos fonds ont été recrédités sur votre solde.',
         });
         return;
       }
@@ -1106,7 +1106,7 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
       }
       res.status(500).json({
         success: false,
-        message: err?.message || 'Erreur lors du traitement du retrait SasPay. Solde restauré.',
+        message: err?.message || 'Erreur lors du traitement du retrait. Solde restauré.',
       });
       return;
     }

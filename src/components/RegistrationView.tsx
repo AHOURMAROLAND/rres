@@ -378,7 +378,7 @@ export const RegistrationView: React.FC<RegistrationViewProps> = ({ onAuthSucces
               </span>
             </div>
             <span className="text-[10px] text-slate-400 font-medium tracking-wide">
-              Jeu de Crash Multijoueur Provably Fair & SasPay
+              Jeu de Crash Multijoueur Provably Fair & Paiement Instantané
             </span>
           </div>
         </div>

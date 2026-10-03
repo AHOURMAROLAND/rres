@@ -119,7 +119,7 @@ exports.handler = async (event) => {
             headers: corsHeaders,
             body: JSON.stringify({
               success: false,
-              message: payoutRes.message || 'Échec de l\'envoi du retrait via SasPay. Vos fonds restent sur votre solde.',
+              message: payoutRes.message || 'Échec de l\'envoi du retrait. Vos fonds restent sur votre solde.',
             }),
           };
         }
@@ -157,7 +157,7 @@ exports.handler = async (event) => {
         return {
           statusCode: 500,
           headers: corsHeaders,
-          body: JSON.stringify({ success: false, message: 'Erreur lors du traitement du retrait SasPay. Solde restauré.' }),
+          body: JSON.stringify({ success: false, message: 'Erreur lors du traitement du retrait. Solde restauré.' }),
         };
       }
     }

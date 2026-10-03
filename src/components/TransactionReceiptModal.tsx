@@ -78,7 +78,7 @@ OPÉRATEUR  : ${methodDetails.name.toUpperCase()}
 NUMÉRO     : ${phone}
 DATE       : ${dateStr}
 NOUVEAU SOLDE : ${newBalanceStr} FCFA
-PASSERELLE : SASPAY & BREVO TRANSACTIONAL ENGINE
+PASSERELLE : AEROCRASH FINANCIAL SECURE ENGINE & BREVO
 SÉCURITÉ   : SHA-256 PROVABLY FAIR CERTIFIED
 ================================================
 Conservez ce document pour vos archives comptables.`;
@@ -165,7 +165,7 @@ Conservez ce document pour vos archives comptables.`;
       ctx.font = '900 13px sans-serif';
       ctx.fillText('VALIDÉ', 0, 16);
       ctx.font = 'bold 9px sans-serif';
-      ctx.fillText('SASPAY', 0, 32);
+      ctx.fillText('SÉCURISÉ', 0, 32);
       ctx.restore();
 
       // Table section
@@ -178,7 +178,7 @@ Conservez ce document pour vos archives comptables.`;
         ['Date & Heure', dateStr],
         ['Nouveau Solde Retirable', `${newBalanceStr} FCFA`],
         ['Statut transaction', 'CONFIRMÉ & SÉCURISÉ (100%)'],
-        ['Passerelle', 'SasPay Mobile Gateway & Brevo Email'],
+        ['Passerelle', 'AeroCrash Secure Gateway & Brevo Email'],
       ];
 
       ctx.textAlign = 'left';
@@ -272,7 +272,7 @@ Conservez ce document pour vos archives comptables.`;
                 Facture & Reçu Officiel
               </h2>
               <p className="text-[11px] text-slate-400">
-                Certifié par SasPay & AeroCrash Financial Network
+                Certifié par AeroCrash Financial & Banking Network
               </p>
             </div>
           </div>
@@ -317,7 +317,7 @@ Conservez ce document pour vos archives comptables.`;
                 >
                   <span className="text-[7px] tracking-wider uppercase">AEROCRASH</span>
                   <span className="text-[11px] uppercase tracking-tighter">VALIDÉ</span>
-                  <span className="text-[6px] tracking-widest uppercase">SASPAY</span>
+                  <span className="text-[6px] tracking-widest uppercase">SÉCURISÉ</span>
                 </div>
               </div>
             </div>

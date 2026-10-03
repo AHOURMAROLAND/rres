@@ -116,7 +116,7 @@ export default function App() {
         .then((res) => {
           if (res.success && res.status === 'SUCCESS') {
             soundManager.playCashout();
-            addToast('success', 'Paiement SasPay validé !', 'Votre solde a été crédité et votre compte est prêt à jouer.');
+            addToast('success', 'Paiement validé avec succès !', 'Votre solde a été crédité et votre compte est prêt à jouer.');
             if (res.user) {
               setUser(res.user);
               StorageService.saveUser(res.user);

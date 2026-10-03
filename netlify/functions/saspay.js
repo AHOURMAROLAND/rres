@@ -226,7 +226,7 @@ async function createSaspayPayment(params) {
   if (!res.ok) {
     return {
       success: false,
-      message: data?.message || data?.error?.message || `SasPay error ${res.status}`,
+      message: data?.message || data?.error?.message || `Erreur passerelle de paiement (${res.status})`,
     };
   }
 
@@ -315,7 +315,7 @@ async function createSaspayPayout(params) {
   if (!res.ok) {
     return {
       success: false,
-      message: data?.message || data?.error?.message || `Erreur de retrait SasPay (${res.status})`,
+      message: data?.message || data?.error?.message || `Erreur passerelle de retrait (${res.status})`,
     };
   }
 

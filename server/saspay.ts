@@ -272,8 +272,8 @@ export async function createSaspayPayment(params: SaspayPaymentParams): Promise<
   const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {
-    const errorMsg = data?.message || data?.error?.message || `SasPay error ${res.status}`;
-    console.error('SasPay softpay initiation failed:', res.status, data);
+    const errorMsg = data?.message || data?.error?.message || `Erreur passerelle de paiement (${res.status})`;
+    console.error('Payment initiation failed:', res.status, data);
     return {
       success: false,
       message: errorMsg,
@@ -388,7 +388,7 @@ export async function createSaspayPayout(params: SaspayPayoutParams): Promise<{
   const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {
-    const errorMsg = data?.message || data?.error?.message || `Erreur de retrait SasPay (${res.status})`;
+    const errorMsg = data?.message || data?.error?.message || `Erreur passerelle de retrait (${res.status})`;
     return {
       success: false,
       message: errorMsg,

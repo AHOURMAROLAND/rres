@@ -385,7 +385,7 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
                   Portefeuille FCFA
                 </h2>
                 <span className="px-2 py-0.5 text-[10px] font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-full">
-                  SasPay Sécurisé
+                  Paiement Sécurisé SSL
                 </span>
               </div>
               <p className="text-xs text-slate-400">
@@ -507,14 +507,14 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
 
               <div className="space-y-1">
                 <h3 className="font-display font-black text-base text-white">
-                  Paiement SasPay en cours...
+                  Paiement sécurisé en cours...
                 </h3>
                 <p className="text-xs text-slate-300">
                   Montant à régler : <span className="text-emerald-400 font-bold font-mono-num">{pendingPayment.amount.toLocaleString('fr-FR')} FCFA</span>
                 </p>
                 <p className="text-[11px] text-slate-400 max-w-xs pt-1">
                   {pendingPayment.checkoutUrl
-                    ? 'Une page de paiement sécurisée SasPay a été ouverte. Si la fenêtre a été bloquée, cliquez ci-dessous :'
+                    ? 'Une page de paiement sécurisée a été ouverte. Si la fenêtre a été bloquée, cliquez ci-dessous :'
                     : 'Une notification a été envoyée sur votre téléphone. Veuillez saisir votre code secret Mobile Money pour valider.'}
                 </p>
               </div>
@@ -527,7 +527,7 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
                   className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 shadow-lg transition-all"
                 >
                   <ExternalLink className="w-4 h-4" />
-                  <span>Ouvrir la page de paiement SasPay</span>
+                  <span>Ouvrir la page de paiement sécurisée</span>
                 </a>
               )}
 
@@ -700,12 +700,12 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
               ) : method === 'card' ? (
                 <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-xs text-slate-400 flex items-center gap-2">
                   <CreditCard className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span>Vous serez redirigé vers la page sécurisée SasPay pour régler par carte bancaire (Visa / Mastercard).</span>
+                  <span>Vous serez redirigé vers la passerelle sécurisée pour régler par carte bancaire (Visa / Mastercard).</span>
                 </div>
               ) : (
                 <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-xs text-slate-400 flex items-center gap-2">
                   <span className="text-base shrink-0">🪙</span>
-                  <span>Vous serez redirigé vers la page sécurisée SasPay pour sélectionner votre crypto / stablecoin (USDT).</span>
+                  <span>Vous serez redirigé vers la passerelle sécurisée pour sélectionner votre crypto / stablecoin (USDT).</span>
                 </div>
               )}
 
@@ -722,7 +722,7 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
                 {isProcessing ? (
                   <>
                     <Loader2 className="w-5 h-5 animate-spin" />
-                    <span>Communication avec SasPay...</span>
+                    <span>Traitement sécurisé en cours...</span>
                   </>
                 ) : (
                   <span>

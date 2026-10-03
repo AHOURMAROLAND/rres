@@ -406,7 +406,7 @@ export const EmailTemplates = {
           </table>
         </div>
         <div class="footer">
-          Facture générée automatiquement via la passerelle SasPay & AeroCrash Live.<br>
+          Facture générée automatiquement par AeroCrash Banking & Financial Network.<br>
           Conservez ce document pour vos archives comptables.
         </div>
       </div>
