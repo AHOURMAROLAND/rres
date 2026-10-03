@@ -16,6 +16,7 @@ import {
   Database,
   Sparkles,
   RefreshCw,
+  FileText,
 } from 'lucide-react';
 import { User as UserType } from '../types';
 import { soundManager } from '../services/sound';
@@ -23,6 +24,8 @@ import { AuthApi } from '../services/authApi';
 import { StorageService } from '../services/storage';
 import { isSupabaseConfigured } from '../services/supabase';
 import { COUNTRIES } from '../data/countries';
+import { PaymentLogo } from './PaymentLogos';
+import { TransactionReceiptModal } from './TransactionReceiptModal';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -64,6 +67,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [selectedReceiptTx, setSelectedReceiptTx] = useState<any>(null);
 
   // Sync tab when modal opens or auth state changes
   useEffect(() => {
@@ -582,6 +586,74 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </div>
               </div>
 
+              {/* Transactions & Receipts History */}
+              {(() => {
+                const txs = StorageService.getTransactions(currentUser.id);
+                if (!txs || txs.length === 0) return null;
+                return (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-xs font-bold text-slate-300 px-1">
+                      <span className="flex items-center gap-1.5">
+                        <FileText className="w-3.5 h-3.5 text-orange-400" />
+                        <span>Historique des Factures & Reçus</span>
+                      </span>
+                      <span className="text-[10px] text-slate-500 font-mono-num">
+                        {txs.length} transaction{txs.length > 1 ? 's' : ''}
+                      </span>
+                    </div>
+
+                    <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
+                      {txs.slice(0, 10).map((t) => (
+                        <div
+                          key={t.id || t.reference}
+                          className="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 flex items-center justify-between text-xs hover:border-slate-700 transition-colors"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <PaymentLogo method={t.method} size="sm" className="w-6 h-6 rounded shrink-0" />
+                            <div className="min-w-0">
+                              <div className="font-bold text-white truncate text-[11px]">
+                                {t.type === 'deposit' ? 'Dépôt' : t.type === 'withdraw' ? 'Retrait' : 'Activation'} ({t.reference})
+                              </div>
+                              <div className="text-[10px] text-slate-500 font-mono-num">
+                                {new Date(t.timestamp).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span
+                              className={`font-mono-num font-bold text-xs ${
+                                t.type === 'deposit' || t.type === 'activation'
+                                  ? 'text-emerald-400'
+                                  : 'text-orange-400'
+                              }`}
+                            >
+                              {t.type === 'deposit' || t.type === 'activation' ? '+' : '-'}
+                              {t.amount?.toLocaleString('fr-FR')} F
+                            </span>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                soundManager.playClick();
+                                setSelectedReceiptTx({
+                                  ...t,
+                                  balance: currentUser.balance,
+                                });
+                              }}
+                              className="px-2 py-1 rounded-lg bg-slate-850 hover:bg-orange-500/20 text-orange-400 hover:text-orange-300 font-bold text-[10px] border border-orange-500/30 transition-all flex items-center gap-1 cursor-pointer"
+                            >
+                              <FileText className="w-3 h-3" />
+                              <span>Reçu</span>
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* Action buttons */}
               <div className="flex flex-col gap-2 pt-1">
                 {!currentUser.isActivated && (
@@ -631,6 +703,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Transaction Receipt Modal */}
+      {selectedReceiptTx && (
+        <TransactionReceiptModal
+          isOpen={Boolean(selectedReceiptTx)}
+          onClose={() => setSelectedReceiptTx(null)}
+          transaction={selectedReceiptTx}
+          user={currentUser}
+        />
+      )}
     </div>
   );
 };

@@ -158,3 +158,24 @@ export const PaymentLogo: React.FC<PaymentLogoProps> = ({ method, className = ''
     </div>
   );
 };
+
+export function getPaymentMethodDetails(method: PaymentMethod | string): {
+  name: string;
+  color: string;
+  operator: string;
+} {
+  const m = (method || '').toLowerCase().trim();
+  if (m.includes('wave')) return { name: 'Wave Mobile Money', color: '#1AD7FF', operator: 'Wave' };
+  if (m.includes('orange')) return { name: 'Orange Money', color: '#FF7900', operator: 'Orange' };
+  if (m.includes('mtn')) return { name: 'MTN Mobile Money (MoMo)', color: '#FFCC00', operator: 'MTN' };
+  if (m.includes('moov')) return { name: 'Moov Africa Money', color: '#005BAC', operator: 'Moov' };
+  if (m.includes('free')) return { name: 'Free Money Sénégal', color: '#E41B23', operator: 'Free' };
+  if (m.includes('togo') || m.includes('tmoney') || m.includes('t-money')) return { name: 'Togocel / T-Money', color: '#008542', operator: 'Togocom' };
+  if (m.includes('celtiis')) return { name: 'Celtiis Cash Bénin', color: '#6C2586', operator: 'Celtiis' };
+  if (m.includes('airtel')) return { name: 'Airtel Money', color: '#FF0000', operator: 'Airtel' };
+  if (m.includes('vodacom') || m.includes('mpesa')) return { name: 'Vodacom M-Pesa', color: '#E60000', operator: 'Vodacom' };
+  if (m.includes('wizall')) return { name: 'Wizall Money', color: '#4A154B', operator: 'Wizall' };
+  if (m.includes('card') || m.includes('carte')) return { name: 'Carte Bancaire (Visa / Mastercard)', color: '#1E293B', operator: 'SasPay Card' };
+  if (m.includes('crypto') || m.includes('usdt')) return { name: 'Crypto USDT (Tether)', color: '#26A17B', operator: 'Tether' };
+  return { name: 'Paiement Mobile Money', color: '#F97316', operator: 'SasPay' };
+}

@@ -12,12 +12,14 @@ import {
   RefreshCw,
   Globe,
   KeyRound,
+  FileText,
 } from 'lucide-react';
 import { PaymentMethod, User } from '../types';
 import { soundManager } from '../services/sound';
 import { AuthApi } from '../services/authApi';
 import { COUNTRIES, getCountryByCode } from '../data/countries';
 import { PaymentLogo } from './PaymentLogos';
+import { TransactionReceiptModal } from './TransactionReceiptModal';
 
 interface DepositWithdrawModalProps {
   isOpen: boolean;
@@ -140,6 +142,8 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [pendingPayment, setPendingPayment] = useState<PendingPaymentState | null>(null);
+  const [completedTx, setCompletedTx] = useState<any>(null);
+  const [isReceiptOpen, setIsReceiptOpen] = useState(false);
 
   const selectedCountry = getCountryByCode(country);
   const pollIntervalRef = useRef<any>(null);
@@ -226,11 +230,19 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
         stopPolling();
         setPendingPayment(null);
         soundManager.playCashout();
-        onDepositSuccess(pendingPayment.amount, pendingPayment.method, pendingPayment.phone);
-        setSuccessMessage(`Dépôt de ${pendingPayment.amount.toLocaleString('fr-FR')} FCFA validé avec succès !`);
-        setTimeout(() => {
-          handleClose();
-        }, 1800);
+        const txObj = {
+          amount: pendingPayment.amount,
+          reference: 'DEP-' + Math.floor(100000 + Math.random() * 900000),
+          method: pendingPayment.method,
+          phoneNumber: pendingPayment.phone,
+          type: 'deposit',
+          status: 'success',
+          timestamp: Date.now(),
+          balance: res.balance !== undefined ? res.balance : user.balance,
+        };
+        setCompletedTx(txObj);
+        onDepositSuccess(pendingPayment.amount, pendingPayment.method, pendingPayment.phone, txObj);
+        setSuccessMessage(`Dépôt de ${pendingPayment.amount.toLocaleString('fr-FR')} FCFA validé avec succès ! Jeu débloqué.`);
       } else {
         setErrorMessage(
           res.status === 'PENDING'
@@ -311,7 +323,18 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
         // Instant validation (simulation or instant provider)
         setIsProcessing(false);
         soundManager.playCashout();
-        onDepositSuccess(cleanAmount, method, phone.trim(), (res as any).transaction);
+        const txObj = (res as any).transaction || {
+          amount: cleanAmount,
+          reference: 'DEP-' + Math.floor(100000 + Math.random() * 900000),
+          method,
+          phoneNumber: fullPhone,
+          type: 'deposit',
+          status: 'success',
+          timestamp: Date.now(),
+          balance: res.balance !== undefined ? res.balance : (user.balance + cleanAmount),
+        };
+        setCompletedTx(txObj);
+        onDepositSuccess(cleanAmount, method, phone.trim(), txObj);
         setSuccessMessage(`Dépôt de ${cleanAmount.toLocaleString('fr-FR')} FCFA validé avec succès ! Jeu débloqué.`);
       } else {
         const res = await AuthApi.withdraw(cleanAmount, method, phone.trim(), country);
@@ -324,13 +347,20 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
 
         setIsProcessing(false);
         soundManager.playCashout();
-        onWithdrawSuccess(cleanAmount, method, fullPhone, (res as any).transaction);
+        const txObj = (res as any).transaction || {
+          amount: cleanAmount,
+          reference: 'RET-' + Math.floor(100000 + Math.random() * 900000),
+          method,
+          phoneNumber: fullPhone,
+          type: 'withdraw',
+          status: 'success',
+          timestamp: Date.now(),
+          balance: res.balance !== undefined ? res.balance : Math.max(0, user.balance - cleanAmount),
+        };
+        setCompletedTx(txObj);
+        onWithdrawSuccess(cleanAmount, method, fullPhone, txObj);
         setSuccessMessage(res.message || `Retrait de ${cleanAmount.toLocaleString('fr-FR')} FCFA transféré vers votre compte ${method.toUpperCase()} !`);
       }
-
-      setTimeout(() => {
-        handleClose();
-      }, 1500);
     } catch (err: any) {
       setIsProcessing(false);
       setErrorMessage(err?.message || 'Erreur réseau ou communication impossible avec le serveur.');
@@ -408,14 +438,60 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
             </div>
           )}
 
-          {/* Success Message Box */}
+          {/* Success Receipt View */}
           {successMessage ? (
-            <div className="py-8 flex flex-col items-center text-center space-y-3">
-              <div className="w-12 h-12 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center animate-bounce">
+            <div className="py-4 space-y-3.5 text-center animate-in fade-in">
+              <div className="w-12 h-12 mx-auto rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center animate-bounce">
                 <CheckCircle2 className="w-7 h-7" />
               </div>
-              <p className="text-sm font-bold text-white max-w-xs">{successMessage}</p>
-              <p className="text-xs text-slate-400">Mise à jour immédiate du portefeuille</p>
+              <div>
+                <h3 className="text-base font-display font-black text-white">
+                  {tab === 'deposit' ? 'Transaction de Dépôt Confirmée' : 'Demande de Retrait Transférée'}
+                </h3>
+                <p className="text-xs text-slate-300 mt-1">{successMessage}</p>
+              </div>
+
+              {completedTx && (
+                <div className="p-3.5 rounded-2xl bg-slate-950/90 border border-slate-700/80 text-left space-y-2 text-xs">
+                  <div className="flex justify-between border-b border-slate-800 pb-1.5">
+                    <span className="text-slate-400">Référence officielle :</span>
+                    <span className="font-mono font-bold text-orange-400">{completedTx.reference}</span>
+                  </div>
+                  <div className="flex justify-between border-b border-slate-800 pb-1.5">
+                    <span className="text-slate-400">Montant de l'opération :</span>
+                    <span className="font-bold text-emerald-400 font-mono-num">{completedTx.amount?.toLocaleString('fr-FR')} FCFA</span>
+                  </div>
+                  <div className="flex justify-between border-b border-slate-800 pb-1.5">
+                    <span className="text-slate-400">Numéro Mobile Money :</span>
+                    <span className="font-mono-num text-white">{completedTx.phoneNumber}</span>
+                  </div>
+                  <div className="flex justify-between pt-0.5">
+                    <span className="text-slate-400">Solde du Portefeuille :</span>
+                    <span className="font-bold text-white font-mono-num">{completedTx.balance?.toLocaleString('fr-FR')} FCFA</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-2 pt-1">
+                {completedTx && (
+                  <button
+                    type="button"
+                    onClick={() => setIsReceiptOpen(true)}
+                    className="w-full py-3 rounded-xl bg-gradient-to-r from-orange-500 via-orange-600 to-amber-500 hover:from-orange-400 hover:to-amber-400 text-white font-display font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-xl shadow-orange-500/25 transition-all cursor-pointer"
+                  >
+                    <FileText className="w-4 h-4" />
+                    <span>Télécharger mon Reçu (Image PNG & PDF)</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleClose}
+                  className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs transition-colors cursor-pointer"
+                >
+                  Continuer vers le Jeu
+                </button>
+              </div>
             </div>
           ) : pendingPayment ? (
             /* Pending SasPay Payment Waiting View */
@@ -660,6 +736,16 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
           )}
         </div>
       </div>
+
+      {/* Official Transaction Receipt Modal */}
+      {completedTx && (
+        <TransactionReceiptModal
+          isOpen={isReceiptOpen}
+          onClose={() => setIsReceiptOpen(false)}
+          transaction={completedTx}
+          user={user}
+        />
+      )}
     </div>
   );
 };

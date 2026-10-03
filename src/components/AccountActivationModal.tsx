@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
-import { X, CheckCircle2, ShieldCheck, Smartphone, CreditCard, Sparkles, ArrowRight, Loader2, Receipt } from 'lucide-react';
+import { X, CheckCircle2, ShieldCheck, Smartphone, CreditCard, Sparkles, ArrowRight, Loader2, Receipt, FileText } from 'lucide-react';
 import { PaymentMethod, User } from '../types';
 import { soundManager } from '../services/sound';
+import { PaymentLogo } from './PaymentLogos';
+import { TransactionReceiptModal } from './TransactionReceiptModal';
 
 interface AccountActivationModalProps {
   isOpen: boolean;
@@ -21,6 +23,7 @@ export const AccountActivationModal: React.FC<AccountActivationModalProps> = ({
   const [countryCode, setCountryCode] = useState<string>('+225');
   const [step, setStep] = useState<'form' | 'processing' | 'success'>('form');
   const [txRef, setTxRef] = useState<string>('');
+  const [isReceiptOpen, setIsReceiptOpen] = useState(false);
 
   if (!isOpen) return null;
 
@@ -104,88 +107,100 @@ export const AccountActivationModal: React.FC<AccountActivationModalProps> = ({
                   <button
                     type="button"
                     onClick={() => { soundManager.playClick(); setMethod('wave'); }}
-                    className={`p-2.5 rounded-xl border text-left flex flex-col gap-1 transition-all cursor-pointer ${
+                    className={`p-2.5 rounded-xl border text-left flex items-center gap-2.5 transition-all cursor-pointer ${
                       method === 'wave'
                         ? 'bg-sky-950/60 border-sky-400 text-white shadow-md shadow-sky-500/20'
                         : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200'
                     }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <span className="font-black text-xs text-sky-400 tracking-wider">WAVE</span>
-                      {method === 'wave' && <CheckCircle2 className="w-3.5 h-3.5 text-sky-400" />}
+                    <PaymentLogo method="wave" size="sm" className="shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-xs text-white">Wave</span>
+                        {method === 'wave' && <CheckCircle2 className="w-3.5 h-3.5 text-sky-400" />}
+                      </div>
+                      <span className="text-[10px] text-slate-400">Mobile Money (0% frais)</span>
                     </div>
-                    <span className="text-[10px] text-slate-400">Mobile Money (0% frais)</span>
                   </button>
 
                   {/* Orange Money */}
                   <button
                     type="button"
                     onClick={() => { soundManager.playClick(); setMethod('orange_money'); }}
-                    className={`p-2.5 rounded-xl border text-left flex flex-col gap-1 transition-all cursor-pointer ${
+                    className={`p-2.5 rounded-xl border text-left flex items-center gap-2.5 transition-all cursor-pointer ${
                       method === 'orange_money'
                         ? 'bg-orange-950/60 border-orange-500 text-white shadow-md shadow-orange-500/20'
                         : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200'
                     }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <span className="font-black text-xs text-orange-400">ORANGE</span>
-                      {method === 'orange_money' && <CheckCircle2 className="w-3.5 h-3.5 text-orange-400" />}
+                    <PaymentLogo method="orange_money" size="sm" className="shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-xs text-white">Orange Money</span>
+                        {method === 'orange_money' && <CheckCircle2 className="w-3.5 h-3.5 text-orange-400" />}
+                      </div>
+                      <span className="text-[10px] text-slate-400">Maxit / Orange</span>
                     </div>
-                    <span className="text-[10px] text-slate-400">Orange Money</span>
                   </button>
 
                   {/* MTN */}
                   <button
                     type="button"
                     onClick={() => { soundManager.playClick(); setMethod('mtn'); }}
-                    className={`p-2.5 rounded-xl border text-left flex flex-col gap-1 transition-all cursor-pointer ${
+                    className={`p-2.5 rounded-xl border text-left flex items-center gap-2.5 transition-all cursor-pointer ${
                       method === 'mtn'
                         ? 'bg-yellow-950/60 border-yellow-400 text-white shadow-md shadow-yellow-500/20'
                         : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200'
                     }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <span className="font-black text-xs text-yellow-400">MTN MoMo</span>
-                      {method === 'mtn' && <CheckCircle2 className="w-3.5 h-3.5 text-yellow-400" />}
+                    <PaymentLogo method="mtn" size="sm" className="shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-xs text-white">MTN MoMo</span>
+                        {method === 'mtn' && <CheckCircle2 className="w-3.5 h-3.5 text-yellow-400" />}
+                      </div>
+                      <span className="text-[10px] text-slate-400">MTN Mobile Money</span>
                     </div>
-                    <span className="text-[10px] text-slate-400">Mobile Money</span>
                   </button>
 
                   {/* Moov */}
                   <button
                     type="button"
                     onClick={() => { soundManager.playClick(); setMethod('moov'); }}
-                    className={`p-2.5 rounded-xl border text-left flex flex-col gap-1 transition-all cursor-pointer ${
+                    className={`p-2.5 rounded-xl border text-left flex items-center gap-2.5 transition-all cursor-pointer ${
                       method === 'moov'
                         ? 'bg-blue-950/60 border-blue-400 text-white shadow-md shadow-blue-500/20'
                         : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200'
                     }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <span className="font-black text-xs text-blue-400">MOOV</span>
-                      {method === 'moov' && <CheckCircle2 className="w-3.5 h-3.5 text-blue-400" />}
+                    <PaymentLogo method="moov" size="sm" className="shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-xs text-white">Moov Money</span>
+                        {method === 'moov' && <CheckCircle2 className="w-3.5 h-3.5 text-blue-400" />}
+                      </div>
+                      <span className="text-[10px] text-slate-400">Moov Flooz</span>
                     </div>
-                    <span className="text-[10px] text-slate-400">Moov Flooz</span>
                   </button>
 
                   {/* Carte Bancaire */}
                   <button
                     type="button"
                     onClick={() => { soundManager.playClick(); setMethod('card'); }}
-                    className={`p-2.5 rounded-xl border text-left flex flex-col gap-1 transition-all cursor-pointer col-span-2 sm:col-span-2 ${
+                    className={`p-2.5 rounded-xl border text-left flex items-center gap-2.5 transition-all cursor-pointer col-span-2 sm:col-span-2 ${
                       method === 'card'
                         ? 'bg-indigo-950/60 border-indigo-400 text-white shadow-md shadow-indigo-500/20'
                         : 'bg-slate-900/80 border-slate-800 text-slate-400 hover:bg-slate-800 hover:text-slate-200'
                     }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1.5 font-bold text-xs text-indigo-300">
-                        <CreditCard className="w-3.5 h-3.5" />
-                        <span>Carte Bancaire Visa / Mastercard</span>
+                    <PaymentLogo method="card" size="sm" className="shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-xs text-white">Carte Bancaire Visa / Mastercard</span>
+                        {method === 'card' && <CheckCircle2 className="w-3.5 h-3.5 text-indigo-400" />}
                       </div>
-                      {method === 'card' && <CheckCircle2 className="w-3.5 h-3.5 text-indigo-400" />}
+                      <span className="text-[10px] text-slate-400">Sécurisé par 3D Secure</span>
                     </div>
-                    <span className="text-[10px] text-slate-400">Sécurisé 3D-Secure</span>
                   </button>
                 </div>
               </div>
@@ -305,16 +320,44 @@ export const AccountActivationModal: React.FC<AccountActivationModalProps> = ({
                 </div>
               </div>
 
-              <button
-                onClick={onClose}
-                className="w-full py-3.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-display font-bold text-base shadow-xl shadow-emerald-600/30 cursor-pointer active:scale-98 transition-all"
-              >
-                Accéder au Jeu Immédiatement
-              </button>
+              <div className="space-y-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsReceiptOpen(true)}
+                  className="w-full py-3 rounded-2xl bg-gradient-to-r from-orange-500 via-orange-600 to-amber-500 hover:from-orange-400 hover:to-amber-400 text-white font-display font-extrabold text-sm flex items-center justify-center gap-2 shadow-xl shadow-orange-500/25 transition-all cursor-pointer"
+                >
+                  <FileText className="w-4 h-4" />
+                  <span>Télécharger mon Reçu (Image PNG & PDF)</span>
+                </button>
+
+                <button
+                  onClick={onClose}
+                  className="w-full py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-display font-bold text-sm shadow-xl shadow-emerald-600/30 cursor-pointer active:scale-98 transition-all"
+                >
+                  Accéder au Jeu Immédiatement
+                </button>
+              </div>
             </div>
           )}
         </div>
       </div>
+
+      {/* Transaction Receipt Modal */}
+      <TransactionReceiptModal
+        isOpen={isReceiptOpen}
+        onClose={() => setIsReceiptOpen(false)}
+        transaction={{
+          amount: 2000,
+          reference: txRef,
+          method,
+          phoneNumber,
+          type: 'activation',
+          status: 'success',
+          timestamp: Date.now(),
+          balance: (user.balance || 0) + 3000,
+        }}
+        user={user}
+      />
     </div>
   );
 };
