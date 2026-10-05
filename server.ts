@@ -23,7 +23,16 @@ import {
 
 const app = express();
 const PORT = 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'aerocrash_super_secret_jwt_key_2026';
+const JWT_SECRET = process.env.JWT_SECRET || (process.env.VERCEL ? '' : 'aerocrash_super_secret_jwt_key_2026');
+
+if (process.env.VERCEL) {
+  const missingVariables = ['DATABASE_URL', 'JWT_SECRET'].filter(
+    (name) => !process.env[name]?.trim(),
+  );
+  if (missingVariables.length > 0) {
+    throw new Error(`Missing required Vercel environment variables: ${missingVariables.join(', ')}`);
+  }
+}
 
 // Helper: send Brevo deposit invoice email
 function sendDepositInvoiceEmail(user: { email: string; name: string }, tx: any, newBalance: number) {
