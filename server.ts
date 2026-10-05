@@ -4,7 +4,7 @@ import cors from 'cors';
 import path from 'path';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { createServer as createViteServer } from 'vite';
+// Note: Vite is dynamically imported in start() to prevent bundling overhead in serverless (Vercel) environments
 import { UserDatabase, DbUser } from './server/db.js';
 import {
   isSaspayConfigured,
@@ -85,6 +85,15 @@ app.use(express.json({
     req.rawBody = buf;
   },
 }));
+
+// Serverless / Proxy Path Normalizer for Vercel & Netlify rewrites
+app.use((req, res, next) => {
+  const matchedPath = (req.headers['x-matched-path'] as string) || '';
+  if (matchedPath && (req.url === '/' || req.url === '/api' || req.url === '/api/')) {
+    req.url = matchedPath;
+  }
+  next();
+});
 
 // Helper: Sanitize user object for responses (removes hashed password)
 function sanitizeUser(user: DbUser) {
@@ -573,37 +582,44 @@ const handleMe = async (req: Request, res: Response): Promise<void> => {
   });
 };
 
-// Route bindings with aliases for maximum compatibility across Netlify, Render, Railway, etc.
+// Route bindings with aliases for maximum compatibility across Netlify, Vercel, Render, Railway, etc.
 app.post('/api/verify-email-domain', handleVerifyEmailDomain);
 app.post('/api/auth/verify-email-domain', handleVerifyEmailDomain);
 app.post('/.netlify/functions/verify-email-domain', handleVerifyEmailDomain);
+app.post('/verify-email-domain', handleVerifyEmailDomain);
 
 app.post('/api/send-register-otp', handleSendRegisterOtp);
 app.post('/api/auth/send-register-otp', handleSendRegisterOtp);
 app.post('/.netlify/functions/send-register-otp', handleSendRegisterOtp);
+app.post('/send-register-otp', handleSendRegisterOtp);
 
 app.post('/api/forgot-password-request', handleForgotPasswordRequest);
 app.post('/api/auth/forgot-password-request', handleForgotPasswordRequest);
 app.post('/.netlify/functions/forgot-password-request', handleForgotPasswordRequest);
+app.post('/forgot-password-request', handleForgotPasswordRequest);
 
 app.post('/api/forgot-password-reset', handleForgotPasswordReset);
 app.post('/api/auth/forgot-password-reset', handleForgotPasswordReset);
 app.post('/.netlify/functions/forgot-password-reset', handleForgotPasswordReset);
+app.post('/forgot-password-reset', handleForgotPasswordReset);
 
 app.post('/api/register', handleRegister);
 app.post('/api/auth/register', handleRegister);
 app.post('/api/user/register', handleRegister);
 app.post('/.netlify/functions/register', handleRegister);
+app.post('/register', handleRegister);
 
 app.post('/api/login', handleLogin);
 app.post('/api/auth/login', handleLogin);
 app.post('/api/user/login', handleLogin);
 app.post('/.netlify/functions/login', handleLogin);
+app.post('/login', handleLogin);
 
 app.get('/api/me', handleMe);
 app.get('/api/auth/me', handleMe);
 app.get('/api/user/me', handleMe);
 app.get('/.netlify/functions/me', handleMe);
+app.get('/me', handleMe);
 
 // Update Balance (e.g. game cashout, bet deduct)
 const handleBalance = async (req: Request, res: Response): Promise<void> => {
@@ -689,7 +705,9 @@ const handleBalance = async (req: Request, res: Response): Promise<void> => {
   res.json({ success: true, balance: cleanBalance, user: updated ? sanitizeUser(updated) : null });
 };
 app.post('/api/user/balance', handleBalance);
+app.post('/api/balance', handleBalance);
 app.post('/.netlify/functions/balance', handleBalance);
+app.post('/balance', handleBalance);
 
 // Deposit Route (Mandatory deposit to unlock real game, supports SasPay and simulated fallback)
 const handleDeposit = async (req: Request, res: Response): Promise<void> => {
@@ -804,7 +822,9 @@ const handleDeposit = async (req: Request, res: Response): Promise<void> => {
   }
 };
 app.post('/api/user/deposit', handleDeposit);
+app.post('/api/deposit', handleDeposit);
 app.post('/.netlify/functions/deposit', handleDeposit);
+app.post('/deposit', handleDeposit);
 
 // Check Payment Status endpoint (for frontend polling and post-redirect verification)
 const handlePaymentStatus = async (req: Request, res: Response): Promise<void> => {
@@ -897,8 +917,12 @@ const handlePaymentStatus = async (req: Request, res: Response): Promise<void> =
   }
 };
 app.get('/api/user/payment-status/:paymentId', handlePaymentStatus);
+app.get('/api/payment-status/:paymentId', handlePaymentStatus);
+app.get('/payment-status/:paymentId', handlePaymentStatus);
 app.get('/api/user/payment-status', handlePaymentStatus);
+app.get('/api/payment-status', handlePaymentStatus);
 app.get('/.netlify/functions/payment-status', handlePaymentStatus);
+app.get('/payment-status', handlePaymentStatus);
 
 // Withdraw Route
 const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
@@ -1077,7 +1101,9 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
   }
 };
 app.post('/api/user/withdraw', handleWithdraw);
+app.post('/api/withdraw', handleWithdraw);
 app.post('/.netlify/functions/withdraw', handleWithdraw);
+app.post('/withdraw', handleWithdraw);
 
 // SasPay Webhook Endpoint (Strict idempotency & HMAC verification)
 const handleSaspayWebhook = async (req: Request, res: Response): Promise<void> => {
@@ -1177,7 +1203,9 @@ const handleSaspayWebhook = async (req: Request, res: Response): Promise<void> =
   res.status(200).json({ received: true });
 };
 app.post('/api/webhook/saspay', handleSaspayWebhook);
+app.post('/api/webhook-saspay', handleSaspayWebhook);
 app.post('/.netlify/functions/webhook-saspay', handleSaspayWebhook);
+app.post('/webhook-saspay', handleSaspayWebhook);
 
 // Activate Account (Strict: max 3000 FCFA bonus, one-time only)
 const handleActivate = async (req: Request, res: Response): Promise<void> => {
@@ -1268,7 +1296,9 @@ const handleActivate = async (req: Request, res: Response): Promise<void> => {
   });
 };
 app.post('/api/user/activate', handleActivate);
+app.post('/api/activate', handleActivate);
 app.post('/.netlify/functions/activate', handleActivate);
+app.post('/activate', handleActivate);
 
 // Log Bet
 const handleBet = async (req: Request, res: Response): Promise<void> => {
@@ -1306,7 +1336,9 @@ const handleBet = async (req: Request, res: Response): Promise<void> => {
   res.json({ success: true });
 };
 app.post('/api/user/bets', handleBet);
+app.post('/api/bets', handleBet);
 app.post('/.netlify/functions/bets', handleBet);
+app.post('/bets', handleBet);
 
 // Log Transaction
 const handleTx = async (req: Request, res: Response): Promise<void> => {
@@ -1344,19 +1376,26 @@ const handleTx = async (req: Request, res: Response): Promise<void> => {
   res.json({ success: true });
 };
 app.post('/api/user/transactions', handleTx);
+app.post('/api/transactions', handleTx);
 app.post('/.netlify/functions/transactions', handleTx);
+app.post('/transactions', handleTx);
 
 // ==========================================
 // 3. VITE MIDDLEWARE & STATIC SERVING
 // ==========================================
 async function start() {
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
+  if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+    try {
+      const { createServer: createViteServer } = await import('vite');
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } catch (err) {
+      console.warn('Vite dev middleware could not be loaded, continuing without it:', err);
+    }
+  } else if (!process.env.VERCEL) {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
@@ -1369,4 +1408,9 @@ async function start() {
   });
 }
 
-start();
+// Only launch standalone HTTP server when not in serverless runtime (Vercel / Lambda)
+if (!process.env.VERCEL && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
+  start();
+}
+
+export default app;
