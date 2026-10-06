@@ -16,7 +16,7 @@ import {
 import { isNeonConfigured, NeonDatabase, getNeonSql } from './server/neon.js';
 import {
   verifyEmailAddress,
-  sendBrevoEmail,
+  sendTransactionalEmail,
   OtpService,
   EmailTemplates,
 } from './server/email.js';
@@ -34,10 +34,10 @@ if (process.env.VERCEL) {
   }
 }
 
-// Helper: send Brevo deposit invoice email
+// Helper: send deposit invoice email
 function sendDepositInvoiceEmail(user: { email: string; name: string }, tx: any, newBalance: number) {
   if (!user || !user.email) return;
-  sendBrevoEmail({
+  sendTransactionalEmail({
     toEmail: user.email,
     toName: user.name,
     subject: `🧾 Reçu officiel de dépôt (${tx.reference}) - AeroCrash`,
@@ -50,13 +50,15 @@ function sendDepositInvoiceEmail(user: { email: string; name: string }, tx: any,
       balance: newBalance,
       date: new Date().toLocaleString('fr-FR', { timeZone: 'Africa/Abidjan' }),
     }),
-  }).catch((err) => console.warn('Failed to send deposit invoice email:', err));
+  }).then((result) => {
+    if (!result.success) console.warn('Failed to send deposit invoice email:', result.error);
+  });
 }
 
-// Helper: send Brevo withdraw receipt email
+// Helper: send withdrawal receipt email
 function sendWithdrawReceiptEmail(user: { email: string; name: string }, tx: any, newBalance: number) {
   if (!user || !user.email) return;
-  sendBrevoEmail({
+  sendTransactionalEmail({
     toEmail: user.email,
     toName: user.name,
     subject: `💸 Bordereau de retrait (${tx.reference}) - AeroCrash`,
@@ -69,7 +71,9 @@ function sendWithdrawReceiptEmail(user: { email: string; name: string }, tx: any
       balance: newBalance,
       date: new Date().toLocaleString('fr-FR', { timeZone: 'Africa/Abidjan' }),
     }),
-  }).catch((err) => console.warn('Failed to send withdraw receipt email:', err));
+  }).then((result) => {
+    if (!result.success) console.warn('Failed to send withdraw receipt email:', result.error);
+  });
 }
 
 // Configurable Business Rules
@@ -187,14 +191,22 @@ const handleSendRegisterOtp = async (req: Request, res: Response): Promise<void>
       return;
     }
 
-    // 3. Generate and send OTP via Brevo
+    // 3. Generate and send registration OTP
     const otp = OtpService.setOtp(cleanEmail, 'register', { name: cleanName });
-    await sendBrevoEmail({
+    const emailResult = await sendTransactionalEmail({
       toEmail: cleanEmail,
       toName: cleanName,
       subject: `🚀 Votre code de vérification AeroCrash : ${otp}`,
       htmlContent: EmailTemplates.registerOtp(cleanName, otp),
     });
+    if (!emailResult.success) {
+      OtpService.clearOtp(cleanEmail, 'register');
+      res.status(503).json({
+        success: false,
+        message: "L'envoi de l'email est temporairement indisponible. Veuillez réessayer plus tard.",
+      });
+      return;
+    }
 
     res.json({
       success: true,
@@ -239,14 +251,22 @@ const handleForgotPasswordRequest = async (req: Request, res: Response): Promise
       return;
     }
 
-    // 3. Generate & send OTP via Brevo
+    // 3. Generate and send password reset OTP
     const otp = OtpService.setOtp(cleanEmail, 'forgot_password', { userId: user.id });
-    await sendBrevoEmail({
+    const emailResult = await sendTransactionalEmail({
       toEmail: cleanEmail,
       toName: user.name,
       subject: `🛡️ Réinitialisation de votre mot de passe AeroCrash : ${otp}`,
       htmlContent: EmailTemplates.forgotPasswordOtp(user.name, otp),
     });
+    if (!emailResult.success) {
+      OtpService.clearOtp(cleanEmail, 'forgot_password');
+      res.status(503).json({
+        success: false,
+        message: "L'envoi de l'email est temporairement indisponible. Veuillez réessayer plus tard.",
+      });
+      return;
+    }
 
     res.json({
       success: true,
@@ -886,7 +906,7 @@ const handlePaymentStatus = async (req: Request, res: Response): Promise<void> =
 
         const freshUser = UserDatabase.findById(found.user.id);
 
-        // Send official Brevo deposit invoice email
+        // Send transaction receipt email
         sendDepositInvoiceEmail(found.user, found.transaction, newBalance);
 
         res.json({
@@ -1081,7 +1101,7 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
       } catch (err) {}
     }
 
-    // Send official Brevo withdrawal receipt email
+    // Send withdrawal receipt email
     sendWithdrawReceiptEmail(user, tx, newBalance);
 
     const updated = UserDatabase.findById(decoded.id);
@@ -1191,7 +1211,7 @@ const handleSaspayWebhook = async (req: Request, res: Response): Promise<void> =
         }
         console.log(`[SasPay Webhook] Account ${found.user.id} credited with +${addedAmount} FCFA`);
 
-        // Send official Brevo deposit invoice email
+        // Send transaction receipt email
         sendDepositInvoiceEmail(found.user, { ...found.transaction, amount: addedAmount }, newBalance);
       }
     }

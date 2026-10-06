@@ -97,7 +97,7 @@ export const RegistrationView: React.FC<RegistrationViewProps> = ({ onAuthSucces
     }
   };
 
-  // Step 1 of Sign Up: Ping domain & Send OTP via Brevo
+  // Step 1 of Sign Up: Ping domain & send an email OTP
   const handleInitiateSignup = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
@@ -151,7 +151,7 @@ export const RegistrationView: React.FC<RegistrationViewProps> = ({ onAuthSucces
       setEmailPingStatus('valid');
       setEmailPingError(null);
 
-      // Step B: Send Brevo OTP code
+      // Step B: Send email OTP code
       const otpRes = await AuthApi.sendRegisterOtp(cleanEmail, cleanName);
       if (!otpRes.success) {
         setErrorMessage(otpRes.message || "Erreur lors de l'envoi du code de vérification.");
@@ -689,7 +689,7 @@ export const RegistrationView: React.FC<RegistrationViewProps> = ({ onAuthSucces
                   </div>
                 </form>
               ) : (
-                /* Step 2: Saisie de l'OTP Brevo */
+                /* Step 2: Saisie du code OTP */
                 <form onSubmit={handleConfirmSignupOtp} className="space-y-4">
                   <div>
                     <h1 className="text-xl font-display font-black text-white flex items-center gap-2">
@@ -898,7 +898,7 @@ export const RegistrationView: React.FC<RegistrationViewProps> = ({ onAuthSucces
                       Mot de passe oublié ?
                     </h1>
                     <p className="text-xs text-slate-400 mt-1">
-                      Entrez votre adresse email. Nous allons vérifier son existence et vous envoyer un code sécurisé par Brevo.
+                      Entrez votre adresse email. Nous allons vérifier son existence et vous envoyer un code sécurisé.
                     </p>
                   </div>
 

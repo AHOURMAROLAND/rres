@@ -1,21 +1,5 @@
 import dns from 'node:dns/promises';
 
-export interface EmailRecipient {
-  email: string;
-  name?: string;
-}
-
-export interface BrevoEmailPayload {
-  to: EmailRecipient[];
-  subject: string;
-  htmlContent: string;
-  textContent?: string;
-  sender?: {
-    name: string;
-    email: string;
-  };
-}
-
 // In-memory OTP storage with TTL (10 minutes)
 interface StoredOtp {
   code: string;
@@ -101,52 +85,44 @@ export async function verifyEmailAddress(email: string): Promise<{ valid: boolea
   return { valid: true };
 }
 
-/**
- * Sends an email using Brevo (Sendinblue) transactional REST API
- */
-export async function sendBrevoEmail(payload: {
+export async function sendTransactionalEmail(payload: {
   toEmail: string;
   toName?: string;
   subject: string;
   htmlContent: string;
 }): Promise<{ success: boolean; messageId?: string; error?: string }> {
-  const apiKey = (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY || '').trim();
-  const senderEmail = (process.env.BREVO_SENDER_EMAIL || 'support@aerocrash.live').trim();
-  const senderName = (process.env.BREVO_SENDER_NAME || 'AeroCrash Official').trim();
+  const apiKey = (process.env.RESEND_API_KEY || '').trim();
+  const senderEmail = (process.env.RESEND_FROM_EMAIL || '').trim();
+  const senderName = (process.env.RESEND_FROM_NAME || 'AeroCrash').trim();
 
-  // If no Brevo key is configured, log simulated preview for local development
-  if (!apiKey) {
-    console.log(`[Brevo Simulation] To: ${payload.toEmail} | Subject: "${payload.subject}"`);
-    console.log(`[Brevo Simulation] (Configure BREVO_API_KEY in .env to send real emails via Brevo)`);
+  if (!apiKey && !process.env.VERCEL) {
+    console.log(`[Email Simulation] To: ${payload.toEmail} | Subject: "${payload.subject}"`);
     return {
       success: true,
       messageId: 'simulated_' + Date.now(),
     };
   }
 
-  const endpoint = 'https://api.brevo.com/v3/smtp/email';
-  const body: BrevoEmailPayload = {
-    sender: {
-      name: senderName,
-      email: senderEmail,
-    },
-    to: [
-      {
-        email: payload.toEmail.trim(),
-        name: payload.toName || payload.toEmail.split('@')[0],
-      },
-    ],
+  if (!apiKey || !senderEmail) {
+    const error = 'RESEND_API_KEY and RESEND_FROM_EMAIL must be configured to send email.';
+    console.error('[Email Configuration Error]', error);
+    return { success: false, error };
+  }
+
+  const body = {
+    from: `${senderName} <${senderEmail}>`,
+    to: [payload.toEmail.trim()],
     subject: payload.subject,
-    htmlContent: payload.htmlContent,
+    html: payload.htmlContent,
   };
 
   try {
-    const res = await fetch(endpoint, {
+    const res = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
-        'api-key': apiKey,
+        'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
     });
@@ -154,18 +130,18 @@ export async function sendBrevoEmail(payload: {
     const data = await res.json().catch(() => ({}));
 
     if (!res.ok) {
-      const errMsg = data?.message || `Brevo HTTP error ${res.status}`;
-      console.error('[Brevo Error]', res.status, data);
+      const errMsg = data?.message || `Resend HTTP error ${res.status}`;
+      console.error('[Resend Error]', res.status, data);
       return { success: false, error: errMsg };
     }
 
     return {
       success: true,
-      messageId: data.messageId,
+      messageId: data.id,
     };
   } catch (err: any) {
-    console.error('[Brevo Network Error]', err);
-    return { success: false, error: err?.message || 'Erreur réseau Brevo' };
+    console.error('[Resend Network Error]', err);
+    return { success: false, error: err?.message || 'Erreur réseau Resend' };
   }
 }
 
@@ -189,6 +165,10 @@ export class OtpService {
       attempts: 0,
     });
     return code;
+  }
+
+  public static clearOtp(email: string, type: 'register' | 'forgot_password'): void {
+    otpStore.delete(`${type}:${email.trim().toLowerCase()}`);
   }
 
   public static verifyOtp(

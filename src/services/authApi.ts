@@ -644,7 +644,7 @@ export class AuthApi {
   }
 
   /**
-   * Sends Brevo OTP code to user's email for registration verification
+   * Sends a registration OTP code to the user's email
    */
   public static async sendRegisterOtp(email: string, name?: string): Promise<{ success: boolean; message: string }> {
     const baseUrl = getApiBaseUrl();
@@ -674,7 +674,7 @@ export class AuthApi {
   }
 
   /**
-   * Request password reset code via Brevo OTP
+   * Request a password reset code by email
    */
   public static async forgotPasswordRequest(email: string): Promise<{ success: boolean; message: string }> {
     const baseUrl = getApiBaseUrl();
@@ -704,7 +704,7 @@ export class AuthApi {
   }
 
   /**
-   * Reset password with Brevo OTP code
+   * Reset password with an email OTP code
    */
   public static async forgotPasswordReset(email: string, otp: string, newPassword: string): Promise<{ success: boolean; message: string }> {
     const baseUrl = getApiBaseUrl();

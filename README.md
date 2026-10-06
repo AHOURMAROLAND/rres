@@ -35,7 +35,7 @@ Variables à définir pour activer les fonctionnalités correspondantes :
 
 - `APP_URL` : URL publique du déploiement (utilisée pour les retours de paiement SasPay).
 - `SASPAY_API_KEY` et `SASPAY_WEBHOOK_SECRET` : identifiants SasPay pour les paiements et la validation des webhooks.
-- `BREVO_API_KEY` : envoi des e-mails transactionnels; `BREVO_SENDER_EMAIL` et `BREVO_SENDER_NAME` peuvent également être configurés.
+- `RESEND_API_KEY` et `RESEND_FROM_EMAIL` : envoi des codes de vérification, e-mails de réinitialisation et reçus. `RESEND_FROM_NAME` est facultative (valeur par défaut : `AeroCrash`). Créez une clé API dans Resend et vérifiez le domaine de l'adresse expéditeur avant l'envoi en production; ajoutez ensuite ces variables aux environnements Vercel et redéployez.
 - `SASPAY_API_URL`, `MIN_DEPOSIT_FCFA`, `MIN_WITHDRAW_FCFA` et `PLATFORM_FEE_PERCENT` sont facultatives et disposent de valeurs par défaut côté serveur.
 
 Ne configurez pas `VITE_API_URL` pour un déploiement monolithique sur Vercel : le client utilise des chemins relatifs et les réécritures Vercel les dirigent vers la fonction. Les secrets serveur ne doivent jamais être préfixés par `VITE_`.

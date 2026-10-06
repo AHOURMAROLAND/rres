@@ -78,7 +78,7 @@ OPÉRATEUR  : ${methodDetails.name.toUpperCase()}
 NUMÉRO     : ${phone}
 DATE       : ${dateStr}
 NOUVEAU SOLDE : ${newBalanceStr} FCFA
-PASSERELLE : AEROCRASH FINANCIAL SECURE ENGINE & BREVO
+PASSERELLE : AEROCRASH FINANCIAL SECURE ENGINE
 SÉCURITÉ   : SHA-256 PROVABLY FAIR CERTIFIED
 ================================================
 Conservez ce document pour vos archives comptables.`;
@@ -178,7 +178,7 @@ Conservez ce document pour vos archives comptables.`;
         ['Date & Heure', dateStr],
         ['Nouveau Solde Retirable', `${newBalanceStr} FCFA`],
         ['Statut transaction', 'CONFIRMÉ & SÉCURISÉ (100%)'],
-        ['Passerelle', 'AeroCrash Secure Gateway & Brevo Email'],
+        ['Passerelle', 'AeroCrash Secure Gateway'],
       ];
 
       ctx.textAlign = 'left';
@@ -357,11 +357,11 @@ Conservez ce document pour vos archives comptables.`;
                 <span className="font-display font-black text-emerald-400 text-sm">{newBalanceStr} FCFA</span>
               </div>
 
-              {/* Brevo Notification Box */}
+              {/* Email notification */}
               <div className="p-3 rounded-xl bg-slate-900/90 border border-slate-800 flex items-start gap-2.5 text-[11px] text-slate-400 mt-2">
                 <Mail className="w-4 h-4 text-orange-400 shrink-0 mt-0.5" />
                 <span>
-                  Une copie officielle de cette facture a été envoyée par email à <strong className="text-white">{user.email}</strong> via le serveur Brevo.
+                  Une copie officielle de cette facture a été envoyée par email à <strong className="text-white">{user.email}</strong>.
                 </span>
               </div>
             </div>
