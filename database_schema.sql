@@ -1,7 +1,6 @@
 -- ==============================================================================
--- AEROCRASH - SCHÉMA DE BASE DE DONNÉES NEON (PostgreSQL)
--- Copiez et collez ce script dans la console Neon (SQL Editor) puis cliquez sur "Run".
--- https://console.neon.tech
+-- AEROCRASH - SCHÉMA DE BASE DE DONNÉES (PostgreSQL)
+-- Exécutez ce script dans l'éditeur SQL de votre fournisseur PostgreSQL.
 -- ==============================================================================
 
 -- 1. EXTENSIONS RECOMMANDÉES

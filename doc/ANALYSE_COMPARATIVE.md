@@ -54,7 +54,7 @@
 | Spécification                                    | Statut | Observation                                        |
 |--------------------------------------------------|--------|----------------------------------------------------|
 | Stockage serveur (`/data/users.json`)            | ✅     | `server/db.ts` + fichier `data/users.json`          |
-| Stockage cloud (Neon PostgreSQL)                 | ✅     | `server/neon.ts`, schéma `neon_schema.sql`           |
+| Stockage cloud (PostgreSQL Render)               | ✅     | `server/database.ts`, schéma `database_schema.sql`   |
 | Synchronisation locale (localStorage)            | ✅     | `services/storage.ts` — synchro bidirectionnelle     |
 | Aucune perte de solde entre sessions             | ✅     | Double écriture serveur + local au login             |
 
@@ -166,7 +166,7 @@
 | Audio                              | Web Audio API           | Web Audio API         | ✅     |
 | Hachage mot de passe               | bcrypt (salt = 10)      | bcryptjs (salt = 10)  | ✅     |
 | Session                            | Jeton sécurisé          | JWT (30j expiry)      | ✅     |
-| BDD                                | Neon PostgreSQL         | Neon PostgreSQL       | ✅     |
+| BDD                                | PostgreSQL Render      | PostgreSQL Render     | ✅     |
 | Paiements                          | Mobile Money / CB       | SasPay (MM + CB)      | ✅     |
 | Déploiement                        | Serverless              | Netlify Functions     | ✅     |
 
@@ -241,7 +241,7 @@
 ### Toutes les spécifications validées
 - ✅ Architecture complète (React 19 + TypeScript + Vite 8 + Tailwind CSS 4)
 - ✅ Authentification sécurisée (bcrypt salt=10, JWT 30j)
-- ✅ Double persistance (JSON + Neon PostgreSQL + localStorage)
+- ✅ Double persistance (JSON + PostgreSQL + localStorage)
 - ✅ Double mode Démo/Réel (50 000 FCFA virtuel)
 - ✅ Paiements complets (SasPay : Wave, Orange Money, MTN, Moov, CB)
 - ✅ Moteur Canvas 2D 60 FPS avec particules et effets néon

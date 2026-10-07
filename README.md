@@ -1,6 +1,6 @@
 # AeroCrash
 
-Application de jeu React/Vite avec une API Express, une base PostgreSQL Neon et l'intégration de paiements SasPay.
+Application de jeu React/Vite avec une API Express, une base PostgreSQL et l'intégration de paiements SasPay.
 
 ## Développement local
 
@@ -28,7 +28,7 @@ bun run build
 
 Variables **obligatoires** pour que l'API démarre sur Vercel :
 
-- `DATABASE_URL` : URL de connexion Neon PostgreSQL avec SSL; utilisez l'URL poolée recommandée pour le serverless.
+- `DATABASE_URL` : URL PostgreSQL, à configurer dans Vercel pour une base accessible depuis cet environnement.
 - `JWT_SECRET` : secret aléatoire robuste et propre à la production. Ne réutilisez pas la valeur de développement.
 
 Variables à définir pour activer les fonctionnalités correspondantes :
@@ -40,15 +40,15 @@ Variables à définir pour activer les fonctionnalités correspondantes :
 
 Ne configurez pas `VITE_API_URL` pour un déploiement monolithique sur Vercel : le client utilise des chemins relatifs et les réécritures Vercel les dirigent vers la fonction. Les secrets serveur ne doivent jamais être préfixés par `VITE_`.
 
-Les fonctions Vercel sont éphémères : le stockage fichier local `data/users.json` ne persiste pas. Configurez Neon avant d'utiliser l'application en production. Le schéma de base de données est fourni dans `neon_schema.sql`.
+Les fonctions Vercel sont éphémères : le stockage fichier local `data/users.json` ne persiste pas. Configurez une base PostgreSQL accessible à Vercel avant d'utiliser l'application en production. La base créée par le Blueprint Render est configurée automatiquement pour le service Render, mais Vercel doit recevoir sa propre `DATABASE_URL`. Le schéma est fourni dans `database_schema.sql`.
 
 Pour vérifier la configuration localement, exécutez `bun run lint` et `bun run build:client`. Un déploiement distant nécessite ensuite la configuration des variables d'environnement dans Vercel.
 
 ## Déploiement sur Render
 
-Le fichier `render.yaml` configure le service Web, les commandes de build et de démarrage, le contrôle de santé et les variables de production. Dans Render, choisissez **New → Blueprint**, connectez le dépôt GitHub `AHOURMAROLAND/rres`, sélectionnez la branche `main` et le répertoire racine. Vérifiez le service `aerocrash` proposé par le Blueprint.
+Le fichier `render.yaml` configure le service Web et une base PostgreSQL Render gérée, reliée automatiquement au serveur par `DATABASE_URL`. Ce n'est pas une base dans le conteneur Docker : Render gère son stockage séparément du disque éphémère du service Web. Le Blueprint demande le plan `basic-256mb`, qui peut entraîner une facturation; vérifiez le prix affiché dans Render avant de confirmer.
 
-Avant le premier déploiement, fournissez obligatoirement `DATABASE_URL` avec l'URL Neon PostgreSQL (SSL activé). Render génère automatiquement `JWT_SECRET` ; ne le remplacez pas par une valeur de développement. Le serveur refuse de démarrer en production sans ces deux variables. Pour activer l'envoi d'e-mails, renseignez aussi `BREVO_API_KEY` et `BREVO_FROM_EMAIL`. Les variables SasPay ne sont nécessaires que si tu actives les paiements; dans ce cas, configure `SASPAY_API_KEY` et `SASPAY_WEBHOOK_SECRET` ensemble. Les secrets ne doivent être saisis que dans l'interface sécurisée Render.
+Dans Render, choisissez **New → Blueprint**, connectez le dépôt GitHub `AHOURMAROLAND/rres`, sélectionnez la branche `main` et le répertoire racine, puis vérifiez les ressources proposées avant de confirmer. Render crée la base, génère `JWT_SECRET` et injecte `DATABASE_URL`. Le serveur refuse de démarrer si la base ou le secret JWT manque. Pour activer les e-mails, renseignez `BREVO_API_KEY` et `BREVO_FROM_EMAIL`. Les variables SasPay ne sont nécessaires que pour activer les paiements; dans ce cas, configurez ensemble `SASPAY_API_KEY` et `SASPAY_WEBHOOK_SECRET`. Saisissez les secrets uniquement dans l'interface Render.
 
 Après le premier déploiement, ajoutez dans **Environment** :
 
@@ -56,13 +56,13 @@ Après le premier déploiement, ajoutez dans **Environment** :
 - `BREVO_FROM_NAME` : facultative (valeur par défaut : `AeroCrash`).
 - Si SasPay n'est pas encore prêt, ne renseignez pas ses deux clés; le serveur n'exige le secret webhook que lorsque `SASPAY_API_KEY` est configurée.
 
-### Récupérer les clés
+### Finaliser la base et récupérer les clés
 
-1. **Neon** — créez un projet sur [Neon Console](https://console.neon.tech), copiez l'URL PostgreSQL avec SSL pour `DATABASE_URL`, puis exécutez `neon_schema.sql` sur cette base.
+1. **Base Render** — elle est créée par le Blueprint et sa connexion est injectée automatiquement; ne créez pas de projet Neon et ne copiez pas d'URL manuellement. Après le premier déploiement, ouvrez le Shell du service Render et exécutez `bun run db:init` pour appliquer `database_schema.sql`.
 2. **Brevo** — ouvrez **Paramètres → SMTP et API → Clés API et MCP**, créez une clé API et copiez-la une seule fois dans `BREVO_API_KEY`. La capture des paramètres SMTP ne montre pas la clé API : le login SMTP et la clé SMTP ne remplacent pas cette clé. Vérifiez l'adresse expéditeur/le domaine dans Brevo, puis utilisez cette adresse dans `BREVO_FROM_EMAIL`.
 3. **SasPay** — dans le tableau de bord SasPay, récupérez la clé API du mode voulu et créez/configurez un webhook pointant vers `https://<nom-du-service>.onrender.com/api/webhook/saspay`. Copiez la clé API dans `SASPAY_API_KEY` et le secret de signature de ce webhook dans `SASPAY_WEBHOOK_SECRET`. Configurez les deux ensemble; une clé Stripe n'est pas une clé SasPay.
 4. **Render** — après la création du service, copiez son URL `onrender.com` dans `APP_URL`, enregistrez les variables puis relancez un déploiement. Vérifiez `/api/health`, puis testez les e-mails et les paiements en mode test avant toute transaction réelle.
 
 `SASPAY_API_URL`, `MIN_DEPOSIT_FCFA`, `MIN_WITHDRAW_FCFA` et `PLATFORM_FEE_PERCENT` sont facultatives et disposent de valeurs par défaut. Les variables `VITE_*` ne doivent contenir aucun secret.
 
-Exécutez le schéma `neon_schema.sql` sur la base Neon utilisée par `DATABASE_URL` avant de tester l'inscription. Ne téléversez pas le fichier `.env`, ne le commitez pas et n'utilisez pas le stockage local `data/users.json` comme base de production. Les variables d'environnement se configurent dans Render, pas dans le dépôt.
+Ne téléversez pas le fichier `.env`, ne le commitez pas et n'utilisez pas le stockage local `data/users.json` comme base de production. Les bases Render et les variables d'environnement sont gérées hors du conteneur et du dépôt.

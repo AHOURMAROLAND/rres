@@ -51,7 +51,7 @@
 - Endpoints API : `/api/auth/register`, `/api/auth/login`, `/api/me`.
 
 #### Double persistance
-- **Stockage côté serveur** : `/data/users.json` (fichier JSON) + Neon PostgreSQL (base cloud).
+- **Stockage côté serveur** : `/data/users.json` (fichier JSON) + PostgreSQL géré (base cloud).
 - **Synchronisation locale** : `localStorage` pour garantir l'absence totale de perte de solde entre les sessions.
 - **Supabase** optionnel pour synchronisation BDD cloud supplémentaire.
 
@@ -172,7 +172,7 @@
 | **Polices**        | Outfit, JetBrains Mono, Plus Jakarta Sans | Typographie premium                       |
 | **Backend**        | Express.js (Node.js)                  | API REST serveur                              |
 | **Auth**           | JWT (jsonwebtoken) + bcryptjs         | Authentification sécurisée                    |
-| **Base de données**| Neon PostgreSQL (Serverless)          | Persistance cloud                             |
+| **Base de données**| PostgreSQL géré (Render en production) | Persistance cloud                             |
 | **BDD Secondaire** | Supabase (optionnel)                  | Synchronisation alternative                   |
 | **Fichier local**  | JSON (`/data/users.json`)             | Persistance locale serveur                    |
 | **Paiements**      | SasPay API                            | Mobile Money & Cartes bancaires               |
@@ -188,13 +188,13 @@ aerocrah2/
 ├── tsconfig.json               # Configuration TypeScript
 ├── server.ts                   # Serveur Express principal
 ├── netlify.toml                # Configuration déploiement Netlify
-├── neon_schema.sql             # Schéma BDD PostgreSQL (Neon)
+├── database_schema.sql         # Schéma BDD PostgreSQL
 ├── supabase_schema.sql         # Schéma BDD Supabase (optionnel)
 ├── data/
 │   └── users.json              # Stockage utilisateurs local
 ├── server/
 │   ├── db.ts                   # Module base de données locale
-│   ├── neon.ts                 # Module Neon PostgreSQL
+│   ├── database.ts             # Module PostgreSQL (Render/Neon)
 │   ├── saspay.ts               # Intégration passerelle SasPay
 │   └── scripts/
 │       ├── init-db.ts          # Script initialisation BDD

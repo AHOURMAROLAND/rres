@@ -13,7 +13,7 @@ import {
   createSaspayPayout,
   verifySaspayWebhookSignature,
 } from './server/saspay.js';
-import { isNeonConfigured, NeonDatabase, getNeonSql } from './server/neon.js';
+import { isDatabaseConfigured, PostgresDatabase, getDatabaseSql } from './server/database.js';
 import {
   verifyEmailAddress,
   sendTransactionalEmail,
@@ -183,8 +183,8 @@ const handleSendRegisterOtp = async (req: Request, res: Response): Promise<void>
 
     // 2. Check if already exists
     let existing = UserDatabase.findByEmail(cleanEmail);
-    if (!existing && isNeonConfigured()) {
-      const neonFound = await NeonDatabase.findByEmail(cleanEmail);
+    if (!existing && isDatabaseConfigured()) {
+      const neonFound = await PostgresDatabase.findByEmail(cleanEmail);
       if (neonFound) existing = neonFound as any;
     }
     if (existing) {
@@ -243,8 +243,8 @@ const handleForgotPasswordRequest = async (req: Request, res: Response): Promise
 
     // 2. Find user
     let user = UserDatabase.findByEmail(cleanEmail);
-    if (!user && isNeonConfigured()) {
-      const neonFound = await NeonDatabase.findByEmail(cleanEmail);
+    if (!user && isDatabaseConfigured()) {
+      const neonFound = await PostgresDatabase.findByEmail(cleanEmail);
       if (neonFound) user = neonFound as any;
     }
     if (!user) {
@@ -317,9 +317,9 @@ const handleForgotPasswordReset = async (req: Request, res: Response): Promise<v
       UserDatabase.update(user.id, { password: hashedPassword });
     }
 
-    if (isNeonConfigured()) {
+    if (isDatabaseConfigured()) {
       try {
-        const sql = getNeonSql();
+        const sql = getDatabaseSql();
         await sql`UPDATE public.users SET password_hash = ${hashedPassword}, updated_at = NOW() WHERE LOWER(email) = ${cleanEmail}`;
       } catch (err) {}
     }
@@ -394,8 +394,8 @@ const handleRegister = async (req: Request, res: Response): Promise<void> => {
 
     // Validation 4: Check if user already exists
     let existing = UserDatabase.findByEmail(cleanEmail);
-    if (!existing && isNeonConfigured()) {
-      const neonFound = await NeonDatabase.findByEmail(cleanEmail);
+    if (!existing && isDatabaseConfigured()) {
+      const neonFound = await PostgresDatabase.findByEmail(cleanEmail);
       if (neonFound) {
         existing = {
           id: neonFound.id,
@@ -440,9 +440,9 @@ const handleRegister = async (req: Request, res: Response): Promise<void> => {
       transactions: [],
     };
 
-    if (isNeonConfigured()) {
+    if (isDatabaseConfigured()) {
       try {
-        await NeonDatabase.createUser({
+        await PostgresDatabase.createUser({
           id: newUser.id,
           name: newUser.name,
           email: newUser.email,
@@ -498,8 +498,8 @@ const handleLogin = async (req: Request, res: Response): Promise<void> => {
 
     // Find user by email (in local DB or Neon)
     let user = UserDatabase.findByEmail(cleanEmail);
-    if (!user && isNeonConfigured()) {
-      const neonFound = await NeonDatabase.findByEmail(cleanEmail);
+    if (!user && isDatabaseConfigured()) {
+      const neonFound = await PostgresDatabase.findByEmail(cleanEmail);
       if (neonFound) {
         user = {
           id: neonFound.id,
@@ -545,10 +545,10 @@ const handleLogin = async (req: Request, res: Response): Promise<void> => {
 
     let bets = user.bets || [];
     let transactions = user.transactions || [];
-    if (isNeonConfigured()) {
+    if (isDatabaseConfigured()) {
       try {
-        transactions = await NeonDatabase.getUserTransactions(user.id);
-        bets = await NeonDatabase.getUserBets(user.id);
+        transactions = await PostgresDatabase.getUserTransactions(user.id);
+        bets = await PostgresDatabase.getUserBets(user.id);
       } catch (err) {}
     }
 
@@ -581,9 +581,9 @@ const handleMe = async (req: Request, res: Response): Promise<void> => {
   let bets = user?.bets || [];
   let transactions = user?.transactions || [];
 
-  if (isNeonConfigured()) {
+  if (isDatabaseConfigured()) {
     try {
-      const neonUser = await NeonDatabase.findById(decoded.id);
+      const neonUser = await PostgresDatabase.findById(decoded.id);
       if (neonUser) {
         user = {
           id: neonUser.id,
@@ -596,8 +596,8 @@ const handleMe = async (req: Request, res: Response): Promise<void> => {
           createdAt: neonUser.created_at,
           updatedAt: neonUser.updated_at,
         };
-        transactions = await NeonDatabase.getUserTransactions(decoded.id);
-        bets = await NeonDatabase.getUserBets(decoded.id);
+        transactions = await PostgresDatabase.getUserTransactions(decoded.id);
+        bets = await PostgresDatabase.getUserBets(decoded.id);
       }
     } catch (err) {}
   }
@@ -663,9 +663,9 @@ const handleBalance = async (req: Request, res: Response): Promise<void> => {
   }
 
   let user = UserDatabase.findById(decoded.id);
-  if (!user && isNeonConfigured()) {
+  if (!user && isDatabaseConfigured()) {
     try {
-      const neonUser = await NeonDatabase.findById(decoded.id);
+      const neonUser = await PostgresDatabase.findById(decoded.id);
       if (neonUser) {
         user = {
           id: neonUser.id,
@@ -727,9 +727,9 @@ const handleBalance = async (req: Request, res: Response): Promise<void> => {
   const cleanBalance = Math.round(targetBalance * 100) / 100;
   const updated = UserDatabase.update(decoded.id, { balance: cleanBalance });
 
-  if (isNeonConfigured()) {
+  if (isDatabaseConfigured()) {
     try {
-      await NeonDatabase.updateBalance(decoded.id, cleanBalance);
+      await PostgresDatabase.updateBalance(decoded.id, cleanBalance);
     } catch (neonErr) {
       console.warn('Neon balance sync warning:', neonErr);
     }
@@ -815,9 +815,9 @@ const handleDeposit = async (req: Request, res: Response): Promise<void> => {
     };
 
     UserDatabase.addTransaction(decoded.id, tx);
-    if (isNeonConfigured()) {
+    if (isDatabaseConfigured()) {
       try {
-        await NeonDatabase.addTransaction({
+        await PostgresDatabase.addTransaction({
           id: tx.id,
           user_id: decoded.id,
           type: 'deposit',
@@ -901,10 +901,10 @@ const handlePaymentStatus = async (req: Request, res: Response): Promise<void> =
           completedAt: new Date().toISOString(),
         });
 
-        if (isNeonConfigured()) {
+        if (isDatabaseConfigured()) {
           try {
-            await NeonDatabase.updateBalance(found.user.id, newBalance, true);
-            await NeonDatabase.updateTransactionStatus(paymentId, 'success');
+            await PostgresDatabase.updateBalance(found.user.id, newBalance, true);
+            await PostgresDatabase.updateTransactionStatus(paymentId, 'success');
           } catch (err) {}
         }
 
@@ -933,9 +933,9 @@ const handlePaymentStatus = async (req: Request, res: Response): Promise<void> =
 
     if (verifyRes.status === 'FAILED' && found) {
       UserDatabase.updateTransaction(found.user.id, paymentId, { status: 'failed' });
-      if (isNeonConfigured()) {
+      if (isDatabaseConfigured()) {
         try {
-          await NeonDatabase.updateTransactionStatus(paymentId, 'failed');
+          await PostgresDatabase.updateTransactionStatus(paymentId, 'failed');
         } catch (err) {}
       }
     }
@@ -969,9 +969,9 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
   const numAmount = Number(amount);
 
   let user = UserDatabase.findById(decoded.id);
-  if (isNeonConfigured()) {
+  if (isDatabaseConfigured()) {
     try {
-      const neonUser = await NeonDatabase.findById(decoded.id);
+      const neonUser = await PostgresDatabase.findById(decoded.id);
       if (neonUser) {
         if (!user) {
           user = {
@@ -1038,9 +1038,9 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
   const newBalance = Math.round((previousBalance - numAmount) * 100) / 100;
   UserDatabase.update(decoded.id, { balance: newBalance });
 
-  if (isNeonConfigured()) {
+  if (isDatabaseConfigured()) {
     try {
-      await NeonDatabase.updateBalance(decoded.id, newBalance);
+      await PostgresDatabase.updateBalance(decoded.id, newBalance);
     } catch (err) {}
   }
 
@@ -1062,9 +1062,9 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
     if (!payoutRes.success) {
       // Rollback balance on gateway rejection
       UserDatabase.update(decoded.id, { balance: previousBalance });
-      if (isNeonConfigured()) {
+      if (isDatabaseConfigured()) {
         try {
-          await NeonDatabase.updateBalance(decoded.id, previousBalance);
+          await PostgresDatabase.updateBalance(decoded.id, previousBalance);
         } catch (err) {}
       }
       res.status(400).json({
@@ -1088,9 +1088,9 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
     };
     UserDatabase.addTransaction(decoded.id, tx);
 
-    if (isNeonConfigured()) {
+    if (isDatabaseConfigured()) {
       try {
-        await NeonDatabase.addTransaction({
+        await PostgresDatabase.addTransaction({
           id: tx.id,
           user_id: decoded.id,
           type: 'withdraw',
@@ -1121,9 +1121,9 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
     console.error('SasPay payout error:', err);
     // Rollback balance
     UserDatabase.update(decoded.id, { balance: previousBalance });
-    if (isNeonConfigured()) {
+    if (isDatabaseConfigured()) {
       try {
-        await NeonDatabase.updateBalance(decoded.id, previousBalance);
+        await PostgresDatabase.updateBalance(decoded.id, previousBalance);
       } catch (rErr) {}
     }
     res.status(500).json({
@@ -1161,9 +1161,9 @@ const handleSaspayWebhook = async (req: Request, res: Response): Promise<void> =
     let found = UserDatabase.findBySaspayPaymentId(data.id);
 
     // 2. If not in local DB memory, look up in Neon
-    if (!found && isNeonConfigured()) {
+    if (!found && isDatabaseConfigured()) {
       try {
-        const neonFound = await NeonDatabase.findTransactionBySaspayId(data.id);
+        const neonFound = await PostgresDatabase.findTransactionBySaspayId(data.id);
         if (neonFound) {
           found = {
             user: {
@@ -1207,10 +1207,10 @@ const handleSaspayWebhook = async (req: Request, res: Response): Promise<void> =
           completedAt: new Date().toISOString(),
         });
 
-        if (isNeonConfigured()) {
+        if (isDatabaseConfigured()) {
           try {
-            await NeonDatabase.updateBalance(found.user.id, newBalance, true);
-            await NeonDatabase.updateTransactionStatus(data.id, 'success');
+            await PostgresDatabase.updateBalance(found.user.id, newBalance, true);
+            await PostgresDatabase.updateTransactionStatus(data.id, 'success');
           } catch (err) {}
         }
         console.log(`[SasPay Webhook] Account ${found.user.id} credited with +${addedAmount} FCFA`);
@@ -1225,9 +1225,9 @@ const handleSaspayWebhook = async (req: Request, res: Response): Promise<void> =
       UserDatabase.updateTransaction(found.user.id, data.id, {
         status: 'failed',
       });
-      if (isNeonConfigured()) {
+      if (isDatabaseConfigured()) {
         try {
-          await NeonDatabase.updateTransactionStatus(data.id, 'failed');
+          await PostgresDatabase.updateTransactionStatus(data.id, 'failed');
         } catch (err) {}
       }
     }
@@ -1249,9 +1249,9 @@ const handleActivate = async (req: Request, res: Response): Promise<void> => {
   }
 
   let user = UserDatabase.findById(decoded.id);
-  if (!user && isNeonConfigured()) {
+  if (!user && isDatabaseConfigured()) {
     try {
-      const neonUser = await NeonDatabase.findById(decoded.id);
+      const neonUser = await PostgresDatabase.findById(decoded.id);
       if (neonUser) {
         user = {
           id: neonUser.id,
@@ -1306,10 +1306,10 @@ const handleActivate = async (req: Request, res: Response): Promise<void> => {
   };
   UserDatabase.addTransaction(decoded.id, tx);
 
-  if (isNeonConfigured()) {
+  if (isDatabaseConfigured()) {
     try {
-      await NeonDatabase.updateBalance(decoded.id, newBalance, true);
-      await NeonDatabase.addTransaction({
+      await PostgresDatabase.updateBalance(decoded.id, newBalance, true);
+      await PostgresDatabase.addTransaction({
         id: tx.id,
         user_id: decoded.id,
         type: 'activation',
@@ -1348,9 +1348,9 @@ const handleBet = async (req: Request, res: Response): Promise<void> => {
   }
 
   UserDatabase.addBet(decoded.id, bet);
-  if (isNeonConfigured()) {
+  if (isDatabaseConfigured()) {
     try {
-      await NeonDatabase.addBet({
+      await PostgresDatabase.addBet({
         id: bet.id || 'bet_' + Date.now().toString(36),
         user_id: decoded.id,
         round_id: bet.roundId || 'R-0',
@@ -1388,9 +1388,9 @@ const handleTx = async (req: Request, res: Response): Promise<void> => {
   }
 
   UserDatabase.addTransaction(decoded.id, transaction);
-  if (isNeonConfigured()) {
+  if (isDatabaseConfigured()) {
     try {
-      await NeonDatabase.addTransaction({
+      await PostgresDatabase.addTransaction({
         id: transaction.id,
         user_id: decoded.id,
         type: transaction.type || 'deposit',

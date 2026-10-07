@@ -2,6 +2,7 @@ services:
   - type: web
     name: aerocrash
     runtime: node
+    region: oregon
     buildCommand: bun install --frozen-lockfile && bun run build
     startCommand: bun run start
     healthCheckPath: /api/health
@@ -9,7 +10,9 @@ services:
       - key: NODE_ENV
         value: production
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: aerocrash-db
+          property: connectionString
       - key: JWT_SECRET
         generateValue: true
       - key: BREVO_API_KEY
@@ -24,3 +27,10 @@ services:
         sync: false
       - key: SASPAY_API_URL
         value: https://api.saspay.me/api/v1
+
+databases:
+  - name: aerocrash-db
+    databaseName: aerocrash
+    user: aerocrash
+    plan: basic-256mb
+    region: oregon
