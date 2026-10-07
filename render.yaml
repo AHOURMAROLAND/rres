@@ -2,6 +2,7 @@ services:
   - type: web
     name: aerocrash
     runtime: node
+    plan: free
     region: oregon
     buildCommand: bun install --frozen-lockfile && bun run build
     startCommand: bun run start
@@ -15,16 +16,8 @@ services:
           property: connectionString
       - key: JWT_SECRET
         generateValue: true
-      - key: BREVO_API_KEY
-        sync: false
-      - key: BREVO_FROM_EMAIL
-        sync: false
       - key: BREVO_FROM_NAME
         value: AeroCrash
-      - key: SASPAY_API_KEY
-        sync: false
-      - key: SASPAY_WEBHOOK_SECRET
-        sync: false
       - key: SASPAY_API_URL
         value: https://api.saspay.me/api/v1
 
@@ -32,5 +25,5 @@ databases:
   - name: aerocrash-db
     databaseName: aerocrash
     user: aerocrash
-    plan: basic-256mb
+    plan: free
     region: oregon

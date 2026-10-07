@@ -40,29 +40,25 @@ Variables à définir pour activer les fonctionnalités correspondantes :
 
 Ne configurez pas `VITE_API_URL` pour un déploiement monolithique sur Vercel : le client utilise des chemins relatifs et les réécritures Vercel les dirigent vers la fonction. Les secrets serveur ne doivent jamais être préfixés par `VITE_`.
 
-Les fonctions Vercel sont éphémères : le stockage fichier local `data/users.json` ne persiste pas. Configurez une base PostgreSQL accessible à Vercel avant d'utiliser l'application en production. La base créée par le Blueprint Render est configurée automatiquement pour le service Render, mais Vercel doit recevoir sa propre `DATABASE_URL`. Le schéma est fourni dans `database_schema.sql`.
+Les fonctions Vercel sont éphémères : le stockage fichier local `data/users.json` ne persiste pas. Configurez une base PostgreSQL accessible à Vercel avant d'utiliser l'application en production. Vercel doit recevoir sa propre `DATABASE_URL`. Le schéma est fourni dans `database_schema.sql`.
 
 Pour vérifier la configuration localement, exécutez `bun run lint` et `bun run build:client`. Un déploiement distant nécessite ensuite la configuration des variables d'environnement dans Vercel.
 
-## Déploiement sur Render
+## Déploiement manuel sur Render (sans Blueprint)
 
-Le fichier `render.yaml` configure le service Web et une base PostgreSQL Render gérée, reliée automatiquement au serveur par `DATABASE_URL`. Ce n'est pas une base dans le conteneur Docker : Render gère son stockage séparément du disque éphémère du service Web. Le Blueprint demande le plan `basic-256mb`, qui peut entraîner une facturation; vérifiez le prix affiché dans Render avant de confirmer.
+Crée le service Web et la base séparément : choisis **New → Web Service**, pas **Blueprint**. Les instructions ci-dessous configurent les offres gratuites lorsqu'elles sont proposées par Render. Si le tableau de bord demande une carte ou ne propose qu'une offre payante, annule sans confirmer; les plans disponibles peuvent dépendre du compte et de la région.
 
-Dans Render, choisissez **New → Blueprint**, connectez le dépôt GitHub `AHOURMAROLAND/rres`, sélectionnez la branche `main` et le répertoire racine, puis vérifiez les ressources proposées avant de confirmer. Render crée la base, génère `JWT_SECRET` et injecte `DATABASE_URL`. Le serveur refuse de démarrer si la base ou le secret JWT manque. Pour activer les e-mails, renseignez `BREVO_API_KEY` et `BREVO_FROM_EMAIL`. Les variables SasPay ne sont nécessaires que pour activer les paiements; dans ce cas, configurez ensemble `SASPAY_API_KEY` et `SASPAY_WEBHOOK_SECRET`. Saisissez les secrets uniquement dans l'interface Render.
+1. Connecte le dépôt GitHub `AHOURMAROLAND/rres`, la branche `main`, puis choisis **Runtime: Bun**, **Root Directory: .**, **Build Command: `bun install --frozen-lockfile && bun run build`**, **Start Command: `bun run start`**, et **Instance Type: Free**. Configure le contrôle de santé sur `/api/health`.
+2. Séparément, choisis **New → PostgreSQL** et sélectionne **Free**, si proposé. Cette base est un service Render géré séparément du Web Service; elle n'est pas un fichier dans le conteneur Docker. Les bases gratuites Render peuvent avoir des limites de stockage et une date d'expiration : consulte les conditions affichées avant de créer la base.
+3. Depuis les informations de la base, copie l'**Internal Database URL** dans la variable `DATABASE_URL` du Web Service. Ajoute `JWT_SECRET` comme secret aléatoire long. Ne mets pas ces valeurs dans le dépôt, le navigateur ou le chat.
+4. Crée le service, attends l'état **Live**, puis initialise les tables avec `bun run db:init` dans le Shell du Web Service. Si le Shell n'est pas disponible, configure temporairement l'**External Database URL** comme `DATABASE_URL` dans le `.env` local, exécute `bun run db:init`, puis retire l'URL du fichier.
+5. Copie l'adresse publique `https://….onrender.com` dans `APP_URL`, enregistre et redéploie. Vérifie ensuite `https://….onrender.com/api/health`.
 
-Après le premier déploiement, ajoutez dans **Environment** :
+Le plan Web Service gratuit peut s'endormir après une période sans trafic. Les comptes et soldes de joueurs ne doivent pas être considérés comme persistants tant que les limites et la conservation de la base gratuite ne conviennent pas à ton usage.
 
-- `APP_URL` : URL publique du service Render, utilisée pour les retours de paiement et les redirections SasPay.
-- `BREVO_FROM_NAME` : facultative (valeur par défaut : `AeroCrash`).
-- Si SasPay n'est pas encore prêt, ne renseignez pas ses deux clés; le serveur n'exige le secret webhook que lorsque `SASPAY_API_KEY` est configurée.
+### Ajouter Brevo et SasPay (facultatif)
 
-### Finaliser la base et récupérer les clés
+- **Brevo** : ouvre **Paramètres → SMTP et API → Clés API et MCP**, crée une clé API et configure `BREVO_API_KEY`. Vérifie une adresse expéditeur et configure `BREVO_FROM_EMAIL`. Le login et la clé SMTP ne remplacent pas la clé API.
+- **SasPay** : configure `SASPAY_API_KEY` et `SASPAY_WEBHOOK_SECRET` ensemble. Le webhook doit pointer vers `https://<nom-du-service>.onrender.com/api/webhook/saspay`. Utilise d'abord les identifiants de test; une clé Stripe n'est pas une clé SasPay.
 
-1. **Base Render** — elle est créée par le Blueprint et sa connexion est injectée automatiquement; ne créez pas de projet Neon et ne copiez pas d'URL manuellement. Après le premier déploiement, ouvrez le Shell du service Render et exécutez `bun run db:init` pour appliquer `database_schema.sql`.
-2. **Brevo** — ouvrez **Paramètres → SMTP et API → Clés API et MCP**, créez une clé API et copiez-la une seule fois dans `BREVO_API_KEY`. La capture des paramètres SMTP ne montre pas la clé API : le login SMTP et la clé SMTP ne remplacent pas cette clé. Vérifiez l'adresse expéditeur/le domaine dans Brevo, puis utilisez cette adresse dans `BREVO_FROM_EMAIL`.
-3. **SasPay** — dans le tableau de bord SasPay, récupérez la clé API du mode voulu et créez/configurez un webhook pointant vers `https://<nom-du-service>.onrender.com/api/webhook/saspay`. Copiez la clé API dans `SASPAY_API_KEY` et le secret de signature de ce webhook dans `SASPAY_WEBHOOK_SECRET`. Configurez les deux ensemble; une clé Stripe n'est pas une clé SasPay.
-4. **Render** — après la création du service, copiez son URL `onrender.com` dans `APP_URL`, enregistrez les variables puis relancez un déploiement. Vérifiez `/api/health`, puis testez les e-mails et les paiements en mode test avant toute transaction réelle.
-
-`SASPAY_API_URL`, `MIN_DEPOSIT_FCFA`, `MIN_WITHDRAW_FCFA` et `PLATFORM_FEE_PERCENT` sont facultatives et disposent de valeurs par défaut. Les variables `VITE_*` ne doivent contenir aucun secret.
-
-Ne téléversez pas le fichier `.env`, ne le commitez pas et n'utilisez pas le stockage local `data/users.json` comme base de production. Les bases Render et les variables d'environnement sont gérées hors du conteneur et du dépôt.
+Ne téléverse pas le fichier `.env`, ne le commite pas et n'utilise pas le stockage local `data/users.json` comme base de production.
