@@ -22,15 +22,19 @@ import {
 } from './server/email.js';
 
 const app = express();
-const PORT = 3000;
-const JWT_SECRET = process.env.JWT_SECRET || (process.env.VERCEL ? '' : 'aerocrash_super_secret_jwt_key_2026');
+const PORT = Number(process.env.PORT) || 3000;
+const isProduction = process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL);
+const JWT_SECRET = process.env.JWT_SECRET || (isProduction ? '' : 'aerocrash_super_secret_jwt_key_2026');
 
-if (process.env.VERCEL) {
+if (isProduction) {
   const missingVariables = ['DATABASE_URL', 'JWT_SECRET'].filter(
     (name) => !process.env[name]?.trim(),
   );
+  if (process.env.SASPAY_API_KEY?.trim() && !process.env.SASPAY_WEBHOOK_SECRET?.trim()) {
+    missingVariables.push('SASPAY_WEBHOOK_SECRET (required when SASPAY_API_KEY is set)');
+  }
   if (missingVariables.length > 0) {
-    throw new Error(`Missing required Vercel environment variables: ${missingVariables.join(', ')}`);
+    throw new Error(`Missing required production environment variables: ${missingVariables.join(', ')}`);
   }
 }
 

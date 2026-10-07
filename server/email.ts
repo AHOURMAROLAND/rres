@@ -91,11 +91,51 @@ export async function sendTransactionalEmail(payload: {
   subject: string;
   htmlContent: string;
 }): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  const brevoApiKey = (process.env.BREVO_API_KEY || '').trim();
+  const brevoSenderEmail = (process.env.BREVO_FROM_EMAIL || '').trim();
+  const brevoSenderName = (process.env.BREVO_FROM_NAME || 'AeroCrash').trim();
+
+  if (brevoApiKey) {
+    if (!brevoSenderEmail) {
+      const error = 'BREVO_FROM_EMAIL must be configured when BREVO_API_KEY is set.';
+      console.error('[Brevo Configuration Error]', error);
+      return { success: false, error };
+    }
+
+    try {
+      const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'api-key': brevoApiKey,
+        },
+        body: JSON.stringify({
+          sender: { name: brevoSenderName, email: brevoSenderEmail },
+          to: [{ email: payload.toEmail.trim(), ...(payload.toName ? { name: payload.toName } : {}) }],
+          subject: payload.subject,
+          htmlContent: payload.htmlContent,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const error = data?.message || `Brevo HTTP error ${res.status}`;
+        console.error('[Brevo Error]', res.status, data);
+        return { success: false, error };
+      }
+      return { success: true, messageId: data.messageId };
+    } catch (err: any) {
+      console.error('[Brevo Network Error]', err);
+      return { success: false, error: err?.message || 'Erreur réseau Brevo' };
+    }
+  }
+
   const apiKey = (process.env.RESEND_API_KEY || '').trim();
   const senderEmail = (process.env.RESEND_FROM_EMAIL || '').trim();
   const senderName = (process.env.RESEND_FROM_NAME || 'AeroCrash').trim();
 
-  if (!apiKey && !process.env.VERCEL) {
+  if (!apiKey && process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
     console.log(`[Email Simulation] To: ${payload.toEmail} | Subject: "${payload.subject}"`);
     return {
       success: true,
