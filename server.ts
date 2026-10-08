@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { randomUUID } from 'node:crypto';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -747,6 +748,10 @@ app.post('/api/balance', handleBalance);
 app.post('/.netlify/functions/balance', handleBalance);
 app.post('/balance', handleBalance);
 
+function getSaspayProxyStatus(status?: number): number {
+  return status && [400, 404, 409, 410, 422, 429].includes(status) ? status : 502;
+}
+
 // Deposit Route (Mandatory deposit to unlock real game, supports SasPay and simulated fallback)
 const handleDeposit = async (req: Request, res: Response): Promise<void> => {
   const decoded = authenticateToken(req);
@@ -786,6 +791,7 @@ const handleDeposit = async (req: Request, res: Response): Promise<void> => {
       amount: numAmount,
       country: country || user.country || 'CI',
       method,
+      idempotencyKey: randomUUID(),
       customer: {
         first_name: user.name.split(' ')[0] || 'Joueur',
         last_name: user.name.split(' ').slice(1).join(' ') || 'AeroCrash',
@@ -798,9 +804,11 @@ const handleDeposit = async (req: Request, res: Response): Promise<void> => {
     });
 
     if (!saspayResult.success || !saspayResult.paymentId) {
-      res.status(400).json({
+      res.status(getSaspayProxyStatus(saspayResult.gatewayStatus)).json({
         success: false,
         message: saspayResult.message || 'Échec de l\'initialisation du paiement sécurisé.',
+        gatewayStatus: saspayResult.gatewayStatus,
+        gatewayCode: saspayResult.gatewayCode,
       });
       return;
     }
@@ -1054,6 +1062,7 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
       amount: numAmount,
       country: country || user.country || 'CI',
       method,
+      idempotencyKey: randomUUID(),
       phone: cleanPhone,
       customer: {
         first_name: user.name.split(' ')[0] || 'Joueur',
@@ -1072,9 +1081,11 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
           await PostgresDatabase.updateBalance(decoded.id, previousBalance);
         } catch (err) {}
       }
-      res.status(400).json({
+      res.status(getSaspayProxyStatus(payoutRes.gatewayStatus)).json({
         success: false,
         message: payoutRes.message || 'Échec de l\'envoi du retrait. Vos fonds ont été recrédités sur votre solde.',
+        gatewayStatus: payoutRes.gatewayStatus,
+        gatewayCode: payoutRes.gatewayCode,
       });
       return;
     }

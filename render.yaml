@@ -32,6 +32,10 @@ services:
         value: AeroCrash
       - key: SASPAY_API_URL
         value: https://api.saspay.me/api/v1
+      - key: SASPAY_API_KEY
+        sync: false
+      - key: SASPAY_WEBHOOK_SECRET
+        sync: false
 
 databases:
   - name: aerocrash-db

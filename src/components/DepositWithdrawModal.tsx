@@ -293,12 +293,15 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
 
     setIsProcessing(true);
     const fullPhone = phone.trim().startsWith('+') ? phone.trim() : `${selectedCountry.dialCode} ${phone.trim()}`;
+    const checkoutWindow = tab === 'deposit' ? window.open('about:blank', '_blank') : null;
+    if (checkoutWindow) checkoutWindow.opener = null;
 
     try {
       if (tab === 'deposit') {
         const res = await AuthApi.deposit(cleanAmount, method, fullPhone, country, otp.trim() || undefined);
 
         if (!res.success) {
+          checkoutWindow?.close();
           setIsProcessing(false);
           setErrorMessage(res.message || 'Échec du dépôt. Veuillez vérifier vos informations.');
           return;
@@ -317,9 +320,13 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
           };
           setPendingPayment(pendingState);
 
-          // If checkoutUrl is returned, open it in a new window/tab
+          // Reserve a tab during the user gesture so popup blockers do not hide checkout.
           if (res.checkoutUrl) {
-            window.open(res.checkoutUrl, '_blank', 'noopener,noreferrer');
+            if (checkoutWindow && !checkoutWindow.closed) {
+              checkoutWindow.location.replace(res.checkoutUrl);
+            }
+          } else {
+            checkoutWindow?.close();
           }
 
           // Start polling in background
@@ -344,6 +351,7 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
         onDepositSuccess(cleanAmount, method, phone.trim(), txObj);
         setSuccessMessage(`Dépôt de ${cleanAmount.toLocaleString('fr-FR')} FCFA validé avec succès ! Jeu débloqué.`);
       } else {
+        checkoutWindow?.close();
         const res = await AuthApi.withdraw(cleanAmount, method, phone.trim(), country);
 
         if (!res.success) {
@@ -369,6 +377,7 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
         setSuccessMessage(res.message || `Retrait de ${cleanAmount.toLocaleString('fr-FR')} FCFA transféré vers votre compte ${method.toUpperCase()} !`);
       }
     } catch (err: any) {
+      checkoutWindow?.close();
       setIsProcessing(false);
       setErrorMessage(err?.message || 'Erreur réseau ou communication impossible avec le serveur.');
     }

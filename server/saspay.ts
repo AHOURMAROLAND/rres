@@ -30,6 +30,60 @@ export interface SaspayPayoutParams {
 
 const SASPAY_API_URL = process.env.SASPAY_API_URL || 'https://api.saspay.me/api/v1';
 
+function unwrapSaspayData(response: any): any {
+  return response?.data && typeof response.data === 'object' ? response.data : response;
+}
+
+function getSaspayError(response: any, status: number, operation: 'payment' | 'payout'): {
+  message: string;
+  code?: string;
+} {
+  const code = typeof response?.error?.code === 'string'
+    ? response.error.code
+    : typeof response?.code === 'string'
+      ? response.code
+      : undefined;
+  const apiMessage = response?.error?.message || response?.message;
+  const validationMessages = Object.values(response || {})
+    .filter((value): value is string[] => Array.isArray(value))
+    .flat()
+    .filter((value): value is string => typeof value === 'string');
+  const message = apiMessage || validationMessages.join(' ');
+
+  if (status === 401) {
+    return {
+      code,
+      message: 'SasPay refuse la clé API (401). Vérifiez dans Render que SASPAY_API_KEY est une clé active correspondant à l’environnement (sk_live_ en production ou sk_test_ en test).',
+    };
+  }
+
+  if (status === 403 && code === 'api_key_scope_forbidden' && operation === 'payment') {
+    return {
+      code,
+      message: 'La clé SasPay n’a pas le droit d’encaisser. Créez une clé avec le scope PAYIN ou BOTH.',
+    };
+  }
+
+  if (status === 403 && code === 'ip_not_whitelisted') {
+    return {
+      code,
+      message: 'SasPay refuse la requête : l’adresse IP du serveur doit être autorisée dans le tableau de bord SasPay.',
+    };
+  }
+
+  if (status === 403) {
+    return {
+      code,
+      message: message || 'SasPay refuse cette opération (403). Vérifiez l’état du marchand et les autorisations de la clé.',
+    };
+  }
+
+  return {
+    code,
+    message: message || `SasPay a refusé l’opération (${status}).`,
+  };
+}
+
 /**
  * Returns true if SasPay API key is provided
  */
@@ -209,8 +263,10 @@ export async function createSaspayPayment(params: SaspayPaymentParams): Promise<
   status?: string;
   message?: string;
   instructions?: string;
+  gatewayStatus?: number;
+  gatewayCode?: string;
 }> {
-  const apiKey = process.env.SASPAY_API_KEY;
+  const apiKey = process.env.SASPAY_API_KEY?.trim();
   if (!apiKey) {
     throw new Error('SASPAY_API_KEY is not configured');
   }
@@ -253,11 +309,8 @@ export async function createSaspayPayment(params: SaspayPaymentParams): Promise<
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'Authorization': `Bearer ${apiKey}`,
+    'Idempotency-Key': params.idempotencyKey || crypto.randomUUID(),
   };
-
-  if (params.idempotencyKey) {
-    headers['Idempotency-Key'] = params.idempotencyKey;
-  }
 
   const endpoint = `${SASPAY_API_URL}/payments/softpay/`;
   const res = await fetch(endpoint, {
@@ -269,21 +322,27 @@ export async function createSaspayPayment(params: SaspayPaymentParams): Promise<
   const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {
-    const errorMsg = data?.message || data?.error?.message || `Erreur passerelle de paiement (${res.status})`;
-    console.error('Payment initiation failed:', res.status, data);
+    const error = getSaspayError(data, res.status, 'payment');
+    console.error('SasPay payment initiation failed:', {
+      status: res.status,
+      code: error.code || 'unknown',
+    });
     return {
       success: false,
-      message: errorMsg,
+      message: error.message,
+      gatewayStatus: res.status,
+      gatewayCode: error.code,
     };
   }
 
+  const result = unwrapSaspayData(data);
   return {
     success: true,
-    paymentId: data.id,
-    status: data.status || 'PENDING',
-    checkoutUrl: data.checkout_url || undefined,
-    message: data.message || 'Paiement initié avec succès',
-    instructions: data.instructions || undefined,
+    paymentId: result.id,
+    status: result.status || 'PENDING',
+    checkoutUrl: result.checkout_url || undefined,
+    message: result.message || data.message || 'Paiement initié avec succès',
+    instructions: result.instructions || undefined,
   };
 }
 
@@ -299,7 +358,7 @@ export async function verifySaspayPayment(paymentId: string): Promise<{
   raw?: any;
   message?: string;
 }> {
-  const apiKey = process.env.SASPAY_API_KEY;
+  const apiKey = process.env.SASPAY_API_KEY?.trim();
   if (!apiKey) {
     throw new Error('SASPAY_API_KEY is not configured');
   }
@@ -314,20 +373,22 @@ export async function verifySaspayPayment(paymentId: string): Promise<{
   const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {
+    const error = getSaspayError(data, res.status, 'payment');
     return {
       success: false,
       status: 'FAILED',
-      message: data?.message || 'Transaction introuvable',
+      message: error.message,
     };
   }
 
+  const result = unwrapSaspayData(data);
   return {
     success: true,
-    status: data.status || 'PENDING',
-    reference: data.reference,
-    amount: data.net_amount ? Number(data.net_amount) : Number(data.requested_amount || 0),
-    currency: data.currency,
-    raw: data,
+    status: result.status || 'PENDING',
+    reference: result.reference,
+    amount: result.net_amount ? Number(result.net_amount) : Number(result.requested_amount || 0),
+    currency: result.currency,
+    raw: result,
   };
 }
 
@@ -338,8 +399,10 @@ export async function createSaspayPayout(params: SaspayPayoutParams): Promise<{
   success: boolean;
   payoutId?: string;
   message?: string;
+  gatewayStatus?: number;
+  gatewayCode?: string;
 }> {
-  const apiKey = process.env.SASPAY_API_KEY;
+  const apiKey = process.env.SASPAY_API_KEY?.trim();
   if (!apiKey) {
     throw new Error('SASPAY_API_KEY is not configured');
   }
@@ -370,11 +433,8 @@ export async function createSaspayPayout(params: SaspayPayoutParams): Promise<{
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'Authorization': `Bearer ${apiKey}`,
+    'Idempotency-Key': params.idempotencyKey || crypto.randomUUID(),
   };
-
-  if (params.idempotencyKey) {
-    headers['Idempotency-Key'] = params.idempotencyKey;
-  }
 
   const res = await fetch(`${SASPAY_API_URL}/payouts/initialize/`, {
     method: 'POST',
@@ -385,17 +445,24 @@ export async function createSaspayPayout(params: SaspayPayoutParams): Promise<{
   const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {
-    const errorMsg = data?.message || data?.error?.message || `Erreur passerelle de retrait (${res.status})`;
+    const error = getSaspayError(data, res.status, 'payout');
+    console.error('SasPay payout initiation failed:', {
+      status: res.status,
+      code: error.code || 'unknown',
+    });
     return {
       success: false,
-      message: errorMsg,
+      message: error.message,
+      gatewayStatus: res.status,
+      gatewayCode: error.code,
     };
   }
 
+  const result = unwrapSaspayData(data);
   return {
     success: true,
-    payoutId: data.id,
-    message: data.message || 'Retrait envoyé avec succès',
+    payoutId: result.id,
+    message: result.message || data.message || 'Retrait envoyé avec succès',
   };
 }
 
