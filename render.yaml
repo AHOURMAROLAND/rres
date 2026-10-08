@@ -5,7 +5,7 @@ services:
     plan: free
     region: oregon
     buildCommand: bun install --frozen-lockfile && bun run build
-    startCommand: bun run start
+    startCommand: node dist/server.cjs
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
@@ -18,6 +18,12 @@ services:
         generateValue: true
       - key: APP_URL
         value: https://rres.onrender.com
+      - key: GMAIL_USER
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false
+      - key: GMAIL_FROM_NAME
+        value: AeroCrash
       - key: BREVO_API_KEY
         sync: false
       - key: BREVO_FROM_EMAIL

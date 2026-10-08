@@ -1,4 +1,5 @@
 import dns from 'node:dns/promises';
+import nodemailer from 'nodemailer';
 
 // In-memory OTP storage with TTL (10 minutes)
 interface StoredOtp {
@@ -91,6 +92,40 @@ export async function sendTransactionalEmail(payload: {
   subject: string;
   htmlContent: string;
 }): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  const gmailUser = (process.env.GMAIL_USER || '').trim();
+  const gmailAppPassword = (process.env.GMAIL_APP_PASSWORD || '').replace(/\s+/g, '');
+  const gmailFromName = (process.env.GMAIL_FROM_NAME || 'AeroCrash').trim();
+
+  if (gmailUser || gmailAppPassword) {
+    if (!gmailUser || !gmailAppPassword) {
+      const error = 'GMAIL_USER and GMAIL_APP_PASSWORD must both be configured.';
+      console.error('[Gmail Configuration Error]', error);
+      return { success: false, error };
+    }
+
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user: gmailUser, pass: gmailAppPassword },
+    });
+
+    try {
+      const result = await transporter.sendMail({
+        from: { name: gmailFromName, address: gmailUser },
+        to: payload.toName
+          ? { name: payload.toName, address: payload.toEmail.trim() }
+          : payload.toEmail.trim(),
+        subject: payload.subject,
+        html: payload.htmlContent,
+      });
+      return { success: true, messageId: result.messageId };
+    } catch (err: any) {
+      console.error('[Gmail SMTP Error]', err?.code || err?.message || err);
+      return { success: false, error: err?.message || 'Erreur SMTP Gmail' };
+    } finally {
+      transporter.close();
+    }
+  }
+
   const brevoApiKey = (process.env.BREVO_API_KEY || '').trim();
   const brevoSenderEmail = (process.env.BREVO_FROM_EMAIL || '').trim();
   const brevoSenderName = (process.env.BREVO_FROM_NAME || 'AeroCrash').trim();
@@ -144,7 +179,7 @@ export async function sendTransactionalEmail(payload: {
   }
 
   if (!apiKey || !senderEmail) {
-    const error = 'RESEND_API_KEY and RESEND_FROM_EMAIL must be configured to send email.';
+    const error = 'Configure Gmail (GMAIL_USER/GMAIL_APP_PASSWORD), Brevo, or Resend to send email.';
     console.error('[Email Configuration Error]', error);
     return { success: false, error };
   }

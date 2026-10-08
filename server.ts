@@ -13,7 +13,12 @@ import {
   createSaspayPayout,
   verifySaspayWebhookSignature,
 } from './server/saspay.js';
-import { isDatabaseConfigured, PostgresDatabase, getDatabaseSql } from './server/database.js';
+import {
+  initializeDatabaseSchema,
+  isDatabaseConfigured,
+  PostgresDatabase,
+  getDatabaseSql,
+} from './server/database.js';
 import {
   verifyEmailAddress,
   sendTransactionalEmail,
@@ -1417,6 +1422,11 @@ app.post('/transactions', handleTx);
 // 3. VITE MIDDLEWARE & STATIC SERVING
 // ==========================================
 async function start() {
+  if (isProduction) {
+    console.log('Initializing production database schema...');
+    await initializeDatabaseSchema();
+  }
+
   if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
     try {
       const { createServer: createViteServer } = await import('vite');
@@ -1443,7 +1453,10 @@ async function start() {
 
 // Only launch standalone HTTP server when not in serverless runtime (Vercel / Lambda)
 if (!process.env.VERCEL && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
-  start();
+  start().catch((error: unknown) => {
+    console.error('Server startup failed:', error);
+    process.exitCode = 1;
+  });
 }
 
 export default app;

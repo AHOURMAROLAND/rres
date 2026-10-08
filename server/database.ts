@@ -1,3 +1,5 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { Pool } from 'pg';
 
 let pool: Pool | null = null;
@@ -19,6 +21,13 @@ export function getDatabasePool(): Pool {
     });
   }
   return pool;
+}
+
+export async function initializeDatabaseSchema(): Promise<void> {
+  const schemaPath = path.join(process.cwd(), 'database_schema.sql');
+  const schema = await fs.readFile(schemaPath, 'utf8');
+  await getDatabasePool().query(schema);
+  console.log('Database schema applied successfully.');
 }
 
 export function getDatabaseSql() {
