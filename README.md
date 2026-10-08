@@ -48,17 +48,18 @@ Pour vérifier la configuration localement, exécutez `bun run lint` et `bun run
 
 Crée le service Web et la base séparément : choisis **New → Web Service**, pas **Blueprint**. Les instructions ci-dessous configurent les offres gratuites lorsqu'elles sont proposées par Render. Si le tableau de bord demande une carte ou ne propose qu'une offre payante, annule sans confirmer; les plans disponibles peuvent dépendre du compte et de la région.
 
-1. Connecte le dépôt GitHub `AHOURMAROLAND/rres`, la branche `main`, puis choisis **Runtime: Bun**, **Root Directory: .**, **Build Command: `bun install`**, **Start Command: `bun run start`**, et **Instance Type: Free**. Le script `start` lance maintenant le build avant le serveur, donc cela fonctionne même si Render n'exécute que `bun install` comme commande de build. Configure le contrôle de santé sur `/api/health`.
+1. Connecte le dépôt GitHub `AHOURMAROLAND/rres`, la branche `main`, puis choisis **Runtime: Bun**, **Root Directory: .**, **Build Command: `bun install --frozen-lockfile && bun run build`**, **Start Command: `bun run start`**, et **Instance Type: Free**. Configure le contrôle de santé sur `/api/health`. Le build est effectué une seule fois pendant le déploiement.
 2. Séparément, choisis **New → PostgreSQL** et sélectionne **Free**, si proposé. Cette base est un service Render géré séparément du Web Service; elle n'est pas un fichier dans le conteneur Docker. Les bases gratuites Render peuvent avoir des limites de stockage et une date d'expiration : consulte les conditions affichées avant de créer la base.
 3. Depuis les informations de la base, copie l'**Internal Database URL** dans la variable `DATABASE_URL` du Web Service. Ajoute `JWT_SECRET` comme secret aléatoire long. Ne mets pas ces valeurs dans le dépôt, le navigateur ou le chat.
-4. Crée le service, attends l'état **Live**, puis initialise les tables avec `bun run db:init` dans le Shell du Web Service. Si le Shell n'est pas disponible, configure temporairement l'**External Database URL** comme `DATABASE_URL` dans le `.env` local, exécute `bun run db:init`, puis retire l'URL du fichier.
-5. Copie l'adresse publique `https://….onrender.com` dans `APP_URL`, enregistre et redéploie. Vérifie ensuite `https://….onrender.com/api/health`.
+4. Crée le service, attends l'état **Live**, puis initialise les tables avec `bun run db:init` dans le Shell du Web Service. Cette étape est indispensable : sans elle, l'inscription échoue avec `relation "public.users" does not exist`. Si le Shell n'est pas disponible, configure temporairement l'**External Database URL** comme `DATABASE_URL` dans le `.env` local, exécute `bun run db:init`, puis retire l'URL du fichier.
+5. Configure `APP_URL` avec l'adresse publique exacte du service, par exemple `https://rres.onrender.com`, enregistre et redéploie. Vérifie ensuite `https://….onrender.com/api/health`.
+6. Pour activer l'inscription par code email, configure `BREVO_API_KEY` et `BREVO_FROM_EMAIL` dans **Environment**. La clé doit être une clé API Brevo (pas une clé SMTP) et l'adresse d'expédition doit être vérifiée dans Brevo. Redéploie après l'ajout des variables. Sans fournisseur email configuré, l'envoi du code OTP renvoie une erreur et l'inscription ne peut pas continuer.
 
 Le plan Web Service gratuit peut s'endormir après une période sans trafic. Les comptes et soldes de joueurs ne doivent pas être considérés comme persistants tant que les limites et la conservation de la base gratuite ne conviennent pas à ton usage.
 
-### Ajouter Brevo et SasPay (facultatif)
+### Configurer l'email et les paiements
 
-- **Brevo** : ouvre **Paramètres → SMTP et API → Clés API et MCP**, crée une clé API et configure `BREVO_API_KEY`. Vérifie une adresse expéditeur et configure `BREVO_FROM_EMAIL`. Le login et la clé SMTP ne remplacent pas la clé API.
-- **SasPay** : configure `SASPAY_API_KEY` et `SASPAY_WEBHOOK_SECRET` ensemble. Le webhook doit pointer vers `https://<nom-du-service>.onrender.com/api/webhook/saspay`. Utilise d'abord les identifiants de test; une clé Stripe n'est pas une clé SasPay.
+- **Brevo** : ouvre **Paramètres → SMTP et API → Clés API et MCP**, crée une clé API et configure `BREVO_API_KEY`. Vérifie une adresse expéditeur et configure `BREVO_FROM_EMAIL`. Le login et la clé SMTP ne remplacent pas la clé API. Ces deux variables sont requises pour envoyer les OTP d'inscription en production.
+- **SasPay (facultatif)** : configure `SASPAY_API_KEY` et `SASPAY_WEBHOOK_SECRET` ensemble. Le webhook doit pointer vers `https://<nom-du-service>.onrender.com/api/webhook/saspay`. Utilise d'abord les identifiants de test; une clé Stripe n'est pas une clé SasPay.
 
 Ne téléverse pas le fichier `.env`, ne le commite pas et n'utilise pas le stockage local `data/users.json` comme base de production.
