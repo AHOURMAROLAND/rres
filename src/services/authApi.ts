@@ -508,7 +508,7 @@ export class AuthApi {
     const baseUrl = getApiBaseUrl();
 
     try {
-      const res = await fetch(`${baseUrl}/.netlify/functions/deposit`, {
+      const res = await fetch(`${baseUrl}/api/deposit`, {
         method: 'POST',
         headers: this.getHeaders(),
         body: JSON.stringify({ amount, method, phone, country, otp }),

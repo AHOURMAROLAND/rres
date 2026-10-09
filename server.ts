@@ -767,7 +767,40 @@ const handleDeposit = async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const user = UserDatabase.findById(decoded.id);
+  let user = UserDatabase.findById(decoded.id);
+  if (isDatabaseConfigured()) {
+    try {
+      const neonUser = await PostgresDatabase.findById(decoded.id);
+      if (neonUser) {
+        user = {
+          id: neonUser.id,
+          name: neonUser.name,
+          email: neonUser.email,
+          password: neonUser.password_hash,
+          country: neonUser.country,
+          balance: Number(neonUser.balance),
+          isActivated: neonUser.is_activated,
+          createdAt: neonUser.created_at,
+          updatedAt: neonUser.updated_at,
+          bets: user?.bets || [],
+          transactions: user?.transactions || [],
+        };
+        if (!UserDatabase.findById(decoded.id)) {
+          UserDatabase.create(user);
+        }
+      }
+    } catch (err) {
+      console.error('Deposit user lookup failed:', err);
+      if (!user) {
+        res.status(503).json({
+          success: false,
+          message: 'Impossible de vérifier le compte pour le moment. Réessayez plus tard.',
+        });
+        return;
+      }
+    }
+  }
+
   if (!user) {
     res.status(404).json({ success: false, message: 'Utilisateur introuvable.' });
     return;
