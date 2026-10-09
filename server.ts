@@ -773,7 +773,11 @@ const handleDeposit = async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const cleanPhone = (phone || user.email || '').toString().trim();
+  const cleanPhone = typeof phone === 'string' ? phone.trim() : '';
+  if (cleanPhone.replace(/\D/g, '').length < 6 || cleanPhone.includes('@')) {
+    res.status(400).json({ success: false, message: 'Veuillez renseigner un numéro de téléphone valide.' });
+    return;
+  }
   const txId = 'tx_dep_' + Math.random().toString(36).substring(2, 9);
   const reference = 'DEP-' + Date.now().toString().slice(-6);
 
@@ -1029,8 +1033,8 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const cleanPhone = (phone || user.email || '').toString().trim();
-  if (cleanPhone.length < 8) {
+  const cleanPhone = typeof phone === 'string' ? phone.trim() : '';
+  if (cleanPhone.replace(/\D/g, '').length < 6 || cleanPhone.includes('@')) {
     res.status(400).json({ success: false, message: 'Numéro de téléphone Mobile Money invalide.' });
     return;
   }

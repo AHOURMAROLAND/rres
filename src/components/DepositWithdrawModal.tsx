@@ -137,7 +137,7 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
   const [method, setMethod] = useState<PaymentMethod>('wave');
   const [otp, setOtp] = useState<string>('');
   const [amount, setAmount] = useState<number>(5000);
-  const [phone, setPhone] = useState<string>(user.phoneOrEmail || '07 48 92 10 33');
+  const [phone, setPhone] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [isCheckingStatus, setIsCheckingStatus] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -281,8 +281,8 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
       return;
     }
 
-    if (method !== 'card' && method !== 'crypto' && (!phone || phone.trim().length < 6)) {
-      setErrorMessage('Veuillez renseigner un numéro de téléphone Mobile Money valide.');
+    if (!phone || phone.trim().replace(/\D/g, '').length < 6) {
+      setErrorMessage('Veuillez renseigner un numéro de téléphone valide.');
       return;
     }
 
@@ -688,42 +688,42 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
               </div>
 
               {/* Phone number with dynamic dial code badge */}
-              {method !== 'card' && method !== 'crypto' ? (
-                <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label className="text-xs font-bold text-slate-300 uppercase tracking-wider">
-                      Numéro Mobile Money
-                    </label>
-                    <span className="text-[10px] text-slate-400 font-mono-num">
-                      Format : {selectedCountry.dialCode} {selectedCountry.example}
-                    </span>
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-bold text-slate-300 uppercase tracking-wider">
+                    {method === 'card' || method === 'crypto' ? 'Numéro de téléphone de contact' : 'Numéro Mobile Money'}
+                  </label>
+                  <span className="text-[10px] text-slate-400 font-mono-num">
+                    Format : {selectedCountry.dialCode} {selectedCountry.example}
+                  </span>
+                </div>
+                <div className="relative flex rounded-xl border border-slate-700 bg-slate-900 overflow-hidden focus-within:border-orange-500 transition-colors">
+                  <div className="flex items-center gap-1.5 px-3 bg-slate-800/90 border-r border-slate-700/80 text-xs font-bold text-white select-none">
+                    <span className="text-sm">{selectedCountry.flag}</span>
+                    <span className="font-mono-num text-orange-400">{selectedCountry.dialCode}</span>
                   </div>
-                  <div className="relative flex rounded-xl border border-slate-700 bg-slate-900 overflow-hidden focus-within:border-orange-500 transition-colors">
-                    <div className="flex items-center gap-1.5 px-3 bg-slate-800/90 border-r border-slate-700/80 text-xs font-bold text-white select-none">
-                      <span className="text-sm">{selectedCountry.flag}</span>
-                      <span className="font-mono-num text-orange-400">{selectedCountry.dialCode}</span>
-                    </div>
-                    <input
-                      type="tel"
-                      required
-                      value={phone}
-                      onChange={(e) => setPhone(e.target.value)}
-                      placeholder={selectedCountry.example}
-                      className="w-full px-3 py-2.5 bg-transparent text-sm font-mono-num font-semibold text-white placeholder-slate-500 outline-none"
-                    />
+                  <input
+                    type="tel"
+                    required
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    placeholder={selectedCountry.example}
+                    className="w-full px-3 py-2.5 bg-transparent text-sm font-mono-num font-semibold text-white placeholder-slate-500 outline-none"
+                  />
+                </div>
+                {(method === 'card' || method === 'crypto') && (
+                  <div className="mt-2 p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-xs text-slate-400 flex items-center gap-2">
+                    {method === 'card' ? (
+                      <>
+                        <CreditCard className="w-4 h-4 text-emerald-400 shrink-0" />
+                        <span>Vous serez redirigé vers la passerelle sécurisée pour régler par carte bancaire.</span>
+                      </>
+                    ) : (
+                      <span>Vous serez redirigé vers la passerelle sécurisée pour sélectionner votre crypto / stablecoin.</span>
+                    )}
                   </div>
-                </div>
-              ) : method === 'card' ? (
-                <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-xs text-slate-400 flex items-center gap-2">
-                  <CreditCard className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <span>Vous serez redirigé vers la passerelle sécurisée pour régler par carte bancaire (Visa / Mastercard).</span>
-                </div>
-              ) : (
-                <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-xs text-slate-400 flex items-center gap-2">
-                  <span className="text-base shrink-0">🪙</span>
-                  <span>Vous serez redirigé vers la passerelle sécurisée pour sélectionner votre crypto / stablecoin (USDT).</span>
-                </div>
-              )}
+                )}
+              </div>
 
               {/* Submit CTA */}
               <button

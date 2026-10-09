@@ -52,7 +52,7 @@ export const TransactionReceiptModal: React.FC<TransactionReceiptModalProps> = (
   const reference = transaction.reference || (isDeposit ? 'DEP-000000' : 'RET-000000');
   const method = transaction.method || 'wave';
   const methodDetails = getPaymentMethodDetails(method);
-  const phone = transaction.phoneNumber || transaction.phone || user.phoneOrEmail || '';
+  const phone = transaction.phoneNumber || transaction.phone || '';
   const dateStr = transaction.date || new Date(transaction.timestamp || Date.now()).toLocaleString('fr-FR', {
     day: '2-digit',
     month: '2-digit',

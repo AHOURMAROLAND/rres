@@ -280,6 +280,9 @@ export async function createSaspayPayment(params: SaspayPaymentParams): Promise<
   const formattedAmount = Number(params.amount).toFixed(2);
 
   const cleanPhone = (params.customer.phone || '').replace(/[\s\-\(\)\.]/g, '');
+  if (cleanPhone.replace(/\D/g, '').length < 6 || cleanPhone.includes('@')) {
+    throw new Error('A valid customer phone number is required for SasPay payments.');
+  }
   const firstName = params.customer.first_name || 'Joueur';
   const lastName = params.customer.last_name || 'AeroCrash';
   const email = params.customer.email || 'joueur@aerocrash.live';
@@ -294,7 +297,7 @@ export async function createSaspayPayment(params: SaspayPaymentParams): Promise<
       first_name: firstName,
       last_name: lastName,
       email,
-      phone: cleanPhone || '+2250102030405',
+      phone: cleanPhone,
     },
   };
 
