@@ -24,6 +24,19 @@ CREATE TABLE IF NOT EXISTS public.users (
 CREATE INDEX IF NOT EXISTS idx_users_email ON public.users(LOWER(email));
 CREATE INDEX IF NOT EXISTS idx_users_created_at ON public.users(created_at DESC);
 
+-- 2. CODES OTP (persistants entre les redémarrages du serveur)
+CREATE TABLE IF NOT EXISTS public.email_otps (
+  email VARCHAR(255) NOT NULL,
+  type VARCHAR(30) NOT NULL CHECK (type IN ('register', 'forgot_password')),
+  code_hash TEXT NOT NULL,
+  attempts SMALLINT NOT NULL DEFAULT 0,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (email, type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_otps_expires_at ON public.email_otps(expires_at);
+
 -- 3. TABLE DES TRANSACTIONS FINANCIÈRES (SasPay, Dépôts, Retraits)
 CREATE TABLE IF NOT EXISTS public.transactions (
   id TEXT PRIMARY KEY DEFAULT ('tx_' || substr(md5(random()::text), 1, 12)),

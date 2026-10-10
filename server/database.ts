@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { timingSafeEqual } from 'node:crypto';
 import { Pool } from 'pg';
 
 let pool: Pool | null = null;
@@ -70,7 +71,105 @@ export interface DatabaseTransaction {
   created_at: string;
 }
 
+export type EmailOtpType = 'register' | 'forgot_password';
+export type EmailOtpVerificationStatus = 'missing' | 'expired' | 'incorrect' | 'too_many' | 'valid';
+
 export class PostgresDatabase {
+  public static async storeEmailOtp(
+    email: string,
+    type: EmailOtpType,
+    codeHash: string,
+    expiresAt: Date,
+  ): Promise<void> {
+    await getDatabaseSql()`
+      INSERT INTO public.email_otps (email, type, code_hash, attempts, expires_at)
+      VALUES (${email.trim().toLowerCase()}, ${type}, ${codeHash}, 0, ${expiresAt})
+      ON CONFLICT (email, type) DO UPDATE
+      SET code_hash = EXCLUDED.code_hash,
+          attempts = 0,
+          expires_at = EXCLUDED.expires_at,
+          created_at = NOW()
+    `;
+  }
+
+  public static async deleteEmailOtp(email: string, type: EmailOtpType): Promise<void> {
+    await getDatabaseSql()`
+      DELETE FROM public.email_otps
+      WHERE email = ${email.trim().toLowerCase()} AND type = ${type}
+    `;
+  }
+
+  public static async verifyEmailOtp(
+    email: string,
+    type: EmailOtpType,
+    codeHash: string,
+  ): Promise<{ status: EmailOtpVerificationStatus; attempts?: number }> {
+    const client = await getDatabasePool().connect();
+    try {
+      await client.query('BEGIN');
+      const result = await client.query(
+        `SELECT code_hash, attempts, expires_at
+         FROM public.email_otps
+         WHERE email = $1 AND type = $2
+         FOR UPDATE`,
+        [email.trim().toLowerCase(), type],
+      );
+      const stored = result.rows[0] as
+        | { code_hash: string; attempts: number; expires_at: Date }
+        | undefined;
+
+      if (!stored) {
+        await client.query('COMMIT');
+        return { status: 'missing' };
+      }
+
+      if (new Date(stored.expires_at).getTime() < Date.now()) {
+        await client.query(
+          'DELETE FROM public.email_otps WHERE email = $1 AND type = $2',
+          [email.trim().toLowerCase(), type],
+        );
+        await client.query('COMMIT');
+        return { status: 'expired' };
+      }
+
+      const storedDigest = Buffer.from(stored.code_hash, 'hex');
+      const suppliedDigest = Buffer.from(codeHash, 'hex');
+      const matches = storedDigest.length === suppliedDigest.length
+        && timingSafeEqual(storedDigest, suppliedDigest);
+
+      if (!matches) {
+        const attempts = Number(stored.attempts) + 1;
+        if (attempts > 5) {
+          await client.query(
+            'DELETE FROM public.email_otps WHERE email = $1 AND type = $2',
+            [email.trim().toLowerCase(), type],
+          );
+          await client.query('COMMIT');
+          return { status: 'too_many' };
+        }
+        await client.query(
+          `UPDATE public.email_otps SET attempts = $3
+           WHERE email = $1 AND type = $2`,
+          [email.trim().toLowerCase(), type, attempts],
+        );
+        await client.query('COMMIT');
+        return { status: 'incorrect', attempts };
+      }
+
+      await client.query(
+        'DELETE FROM public.email_otps WHERE email = $1 AND type = $2',
+        [email.trim().toLowerCase(), type],
+      );
+      await client.query('COMMIT');
+      return { status: 'valid' };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   public static async findByEmail(email: string): Promise<DatabaseUser | null> {
     const rows = await getDatabaseSql()`
       SELECT * FROM public.users

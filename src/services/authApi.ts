@@ -104,11 +104,11 @@ export class AuthApi {
   }
 
   /**
-   * Register a new user using Netlify Functions directly (/.netlify/functions/register)
+   * Register a new user through the backend API.
    */
   public static async register(payload: RegisterPayload): Promise<AuthResponse> {
     const baseUrl = getApiBaseUrl();
-    const endpoint = `${baseUrl}/.netlify/functions/register`;
+    const endpoint = `${baseUrl}/api/register`;
 
     try {
       const res = await fetch(endpoint, {
@@ -149,42 +149,6 @@ export class AuthApi {
       }
 
       // If route not found on this host (e.g. Netlify functions still building or static preview)
-      if (res.status === 404) {
-        console.warn('Endpoint /.netlify/functions/register returned 404. Activating seamless local persistence mode.');
-        const cleanEmail = payload.email.trim().toLowerCase();
-        const existingAccount = StorageService.getAccountFromVault(cleanEmail);
-        if (existingAccount) {
-          return {
-            success: false,
-            statusCode: 409,
-            message: 'Un compte avec cette adresse email existe déjà. Veuillez vous connecter.',
-          };
-        }
-
-        const localUser: User = {
-          id: 'usr_' + Date.now().toString(36),
-          name: payload.name.trim(),
-          email: cleanEmail,
-          phoneOrEmail: cleanEmail,
-          country: payload.country,
-          balance: 0,
-          isActivated: false,
-          createdAt: Date.now(),
-        };
-        this.setToken('aerocrash_jwt_' + localUser.id);
-        StorageService.setCurrentUser(localUser, [], [], payload.password);
-
-        return {
-          success: true,
-          statusCode: 201,
-          message: 'Compte créé avec succès ! Bienvenue sur AeroCrash.',
-          token: this.getToken() || undefined,
-          user: localUser,
-          bets: [],
-          transactions: [],
-        };
-      }
-
       // Success (Status 200 or 201)
       if (res.ok) {
         const receivedUser = data?.user || {};
@@ -225,49 +189,21 @@ export class AuthApi {
         message: isJson && data?.message ? data.message : `Erreur serveur (${res.status}).`,
       };
     } catch (err: any) {
-      console.warn('Network call to /.netlify/functions/register failed:', err?.message || err);
-      // Fallback: check vault for unique email first
-      const cleanEmail = payload.email.trim().toLowerCase();
-      const existingAccount = StorageService.getAccountFromVault(cleanEmail);
-      if (existingAccount) {
-        return {
-          success: false,
-          statusCode: 409,
-          message: 'Un compte avec cette adresse email existe déjà. Veuillez vous connecter.',
-        };
-      }
-
-      const localUser: User = {
-        id: 'usr_' + Date.now().toString(36),
-        name: payload.name.trim(),
-        email: cleanEmail,
-        phoneOrEmail: cleanEmail,
-        country: payload.country,
-        balance: 0,
-        isActivated: false,
-        createdAt: Date.now(),
-      };
-      this.setToken('aerocrash_jwt_' + localUser.id);
-      StorageService.setCurrentUser(localUser, [], [], payload.password);
-
+      console.warn('Network call to /api/register failed:', err?.message || err);
       return {
-        success: true,
-        statusCode: 201,
-        message: 'Compte créé avec succès ! Bienvenue sur AeroCrash.',
-        token: this.getToken() || undefined,
-        user: localUser,
-        bets: [],
-        transactions: [],
+        success: false,
+        isNetworkError: true,
+        message: 'Impossible de contacter le serveur. Vérifiez votre connexion puis réessayez.',
       };
     }
   }
 
   /**
-   * Log in an existing user using Netlify Functions (/.netlify/functions/login)
+   * Log in an existing user through the backend API.
    */
   public static async login(payload: LoginPayload): Promise<AuthResponse> {
     const baseUrl = getApiBaseUrl();
-    const endpoint = `${baseUrl}/.netlify/functions/login`;
+    const endpoint = `${baseUrl}/api/login`;
     const cleanEmail = payload.email.trim().toLowerCase();
 
     try {
@@ -649,7 +585,7 @@ export class AuthApi {
   public static async sendRegisterOtp(email: string, name?: string): Promise<{ success: boolean; message: string }> {
     const baseUrl = getApiBaseUrl();
     try {
-      const res = await fetch(`${baseUrl}/.netlify/functions/send-register-otp`, {
+      const res = await fetch(`${baseUrl}/api/send-register-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: email.trim().toLowerCase(), name }),

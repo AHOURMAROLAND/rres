@@ -202,7 +202,7 @@ const handleSendRegisterOtp = async (req: Request, res: Response): Promise<void>
     }
 
     // 3. Generate and send registration OTP
-    const otp = OtpService.setOtp(cleanEmail, 'register', { name: cleanName });
+    const otp = await OtpService.setOtp(cleanEmail, 'register', { name: cleanName });
     const emailResult = await sendTransactionalEmail({
       toEmail: cleanEmail,
       toName: cleanName,
@@ -210,7 +210,7 @@ const handleSendRegisterOtp = async (req: Request, res: Response): Promise<void>
       htmlContent: EmailTemplates.registerOtp(cleanName, otp),
     });
     if (!emailResult.success) {
-      OtpService.clearOtp(cleanEmail, 'register');
+      await OtpService.clearOtp(cleanEmail, 'register');
       res.status(503).json({
         success: false,
         message: "L'envoi de l'email est temporairement indisponible. Veuillez réessayer plus tard.",
@@ -262,7 +262,7 @@ const handleForgotPasswordRequest = async (req: Request, res: Response): Promise
     }
 
     // 3. Generate and send password reset OTP
-    const otp = OtpService.setOtp(cleanEmail, 'forgot_password', { userId: user.id });
+    const otp = await OtpService.setOtp(cleanEmail, 'forgot_password', { userId: user.id });
     const emailResult = await sendTransactionalEmail({
       toEmail: cleanEmail,
       toName: user.name,
@@ -270,7 +270,7 @@ const handleForgotPasswordRequest = async (req: Request, res: Response): Promise
       htmlContent: EmailTemplates.forgotPasswordOtp(user.name, otp),
     });
     if (!emailResult.success) {
-      OtpService.clearOtp(cleanEmail, 'forgot_password');
+      await OtpService.clearOtp(cleanEmail, 'forgot_password');
       res.status(503).json({
         success: false,
         message: "L'envoi de l'email est temporairement indisponible. Veuillez réessayer plus tard.",
@@ -305,7 +305,7 @@ const handleForgotPasswordReset = async (req: Request, res: Response): Promise<v
     }
 
     // Verify OTP
-    const otpCheck = OtpService.verifyOtp(cleanEmail, String(otp), 'forgot_password');
+    const otpCheck = await OtpService.verifyOtp(cleanEmail, String(otp), 'forgot_password');
     if (!otpCheck.valid) {
       res.status(400).json({
         success: false,
@@ -379,7 +379,7 @@ const handleRegister = async (req: Request, res: Response): Promise<void> => {
 
     // Optional / Enforced OTP check if OTP is provided
     if (otp) {
-      const otpCheck = OtpService.verifyOtp(cleanEmail, String(otp), 'register');
+      const otpCheck = await OtpService.verifyOtp(cleanEmail, String(otp), 'register');
       if (!otpCheck.valid) {
         res.status(400).json({
           success: false,

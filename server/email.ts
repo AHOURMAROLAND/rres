@@ -1,5 +1,7 @@
 import dns from 'node:dns/promises';
+import { createHmac } from 'node:crypto';
 import nodemailer from 'nodemailer';
+import { isDatabaseConfigured, PostgresDatabase } from './database.js';
 
 // In-memory OTP storage with TTL (10 minutes)
 interface StoredOtp {
@@ -228,29 +230,66 @@ export class OtpService {
     return Math.floor(100000 + Math.random() * 900000).toString();
   }
 
-  public static setOtp(email: string, type: 'register' | 'forgot_password', payload?: any): string {
+  public static async setOtp(email: string, type: 'register' | 'forgot_password', payload?: any): Promise<string> {
     const code = this.generateCode();
     const key = `${type}:${email.trim().toLowerCase()}`;
-    otpStore.set(key, {
-      code,
-      email: email.trim().toLowerCase(),
-      type,
-      payload,
-      expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes
-      attempts: 0,
-    });
+    const expiresAt = Date.now() + 10 * 60 * 1000;
+    if (isDatabaseConfigured()) {
+      const codeHash = this.hashCode(code);
+      await PostgresDatabase.storeEmailOtp(email, type, codeHash, new Date(expiresAt));
+    } else {
+      otpStore.set(key, {
+        code,
+        email: email.trim().toLowerCase(),
+        type,
+        payload,
+        expiresAt,
+        attempts: 0,
+      });
+    }
     return code;
   }
 
-  public static clearOtp(email: string, type: 'register' | 'forgot_password'): void {
+  public static async clearOtp(email: string, type: 'register' | 'forgot_password'): Promise<void> {
     otpStore.delete(`${type}:${email.trim().toLowerCase()}`);
+    if (isDatabaseConfigured()) {
+      await PostgresDatabase.deleteEmailOtp(email, type);
+    }
   }
 
-  public static verifyOtp(
+  public static async verifyOtp(
     email: string,
     code: string,
     type: 'register' | 'forgot_password'
-  ): { valid: boolean; message?: string; payload?: any } {
+  ): Promise<{ valid: boolean; message?: string; payload?: any }> {
+    if (isDatabaseConfigured()) {
+      const result = await PostgresDatabase.verifyEmailOtp(email, type, this.hashCode(code.trim()));
+      switch (result.status) {
+        case 'valid':
+          return { valid: true };
+        case 'expired':
+          return {
+            valid: false,
+            message: 'Le code de vérification a expiré (durée 10 minutes). Veuillez en générer un nouveau.',
+          };
+        case 'incorrect':
+          return {
+            valid: false,
+            message: `Code incorrect (tentative ${result.attempts}/5).`,
+          };
+        case 'too_many':
+          return {
+            valid: false,
+            message: 'Trop de tentatives incorrectes. Veuillez demander un nouveau code de sécurité.',
+          };
+        case 'missing':
+          return {
+            valid: false,
+            message: 'Aucun code de vérification trouvé ou code expiré. Veuillez redemander un code.',
+          };
+      }
+    }
+
     const key = `${type}:${email.trim().toLowerCase()}`;
     const stored = otpStore.get(key);
 
@@ -289,6 +328,11 @@ export class OtpService {
     const payload = stored.payload;
     otpStore.delete(key);
     return { valid: true, payload };
+  }
+
+  private static hashCode(code: string): string {
+    const secret = process.env.JWT_SECRET || 'aerocrash-development-otp-secret';
+    return createHmac('sha256', secret).update(code).digest('hex');
   }
 }
 
