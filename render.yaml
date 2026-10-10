@@ -36,6 +36,12 @@ services:
         sync: false
       - key: SASPAY_WEBHOOK_SECRET
         sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        sync: false
+      - key: RESEND_FROM_NAME
+        value: AeroCrash
 
 databases:
   - name: aerocrash-db

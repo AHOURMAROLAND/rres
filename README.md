@@ -35,7 +35,7 @@ Variables à définir pour activer les fonctionnalités correspondantes :
 
 - `APP_URL` : URL publique du déploiement (utilisée pour les retours de paiement SasPay).
 - `SASPAY_API_KEY` : clé active SasPay `sk_live_...` en production (scope `PAYIN` ou `BOTH`) pour les dépôts. Le marchand doit être actif après validation KYC. `SASPAY_WEBHOOK_SECRET` sert à vérifier les webhooks.
-- E-mail : configurez soit `GMAIL_USER` et `GMAIL_APP_PASSWORD` (mot de passe d'application Google, pas le mot de passe normal), soit `BREVO_API_KEY` et `BREVO_FROM_EMAIL`, soit `RESEND_API_KEY` et `RESEND_FROM_EMAIL`. Gmail est prioritaire si ses deux variables sont renseignées. `GMAIL_FROM_NAME` est facultative (valeur par défaut : `AeroCrash`).
+- E-mail : configurez `GMAIL_USER` et `GMAIL_APP_PASSWORD` (mot de passe d'application Google, pas le mot de passe normal) et, comme secours, `RESEND_API_KEY` avec `RESEND_FROM_EMAIL`. Si Gmail échoue, le serveur attend 10 secondes puis tente Resend. Sans Gmail, Brevo est essayé avant Resend. `GMAIL_FROM_NAME` est facultative (valeur par défaut : `AeroCrash`).
 - `SASPAY_API_URL`, `MIN_DEPOSIT_FCFA`, `MIN_WITHDRAW_FCFA` et `PLATFORM_FEE_PERCENT` sont facultatives et disposent de valeurs par défaut côté serveur.
 
 Ne configurez pas `VITE_API_URL` pour un déploiement monolithique sur Vercel : le client utilise des chemins relatifs et les réécritures Vercel les dirigent vers la fonction. Les secrets serveur ne doivent jamais être préfixés par `VITE_`.
@@ -59,8 +59,9 @@ Le plan Web Service gratuit peut s'endormir après une période sans trafic. Les
 
 ### Configurer l'email et les paiements
 
-- **Gmail** : active la validation en deux étapes dans le compte Google, puis crée un **mot de passe d'application** dans les paramètres de sécurité Google. Dans Render, définis `GMAIL_USER` (adresse Gmail), `GMAIL_APP_PASSWORD` (mot de passe d'application; les espaces sont retirés automatiquement) et, facultativement, `GMAIL_FROM_NAME`. Gmail est prioritaire sur Brevo/Resend quand `GMAIL_USER` et `GMAIL_APP_PASSWORD` sont renseignés. Les comptes Google peuvent imposer des limites d'envoi; pour des volumes élevés, utilise un service d'e-mail transactionnel.
+- **Gmail avec secours Resend** : active la validation en deux étapes dans le compte Google, puis crée un **mot de passe d'application** dans les paramètres de sécurité Google. Dans Render, définis `GMAIL_USER` (adresse Gmail), `GMAIL_APP_PASSWORD` (mot de passe d'application; les espaces sont retirés automatiquement) et les deux variables Resend ci-dessous. Gmail est tenté en premier; s'il échoue, le serveur attend 10 secondes puis envoie via Resend.
 - **Brevo (alternative)** : ouvre **Paramètres → SMTP et API → Clés API et MCP**, crée une clé API et configure `BREVO_API_KEY`. Vérifie une adresse expéditeur et configure `BREVO_FROM_EMAIL`. Le login et la clé SMTP ne remplacent pas la clé API.
+- **Resend** : configure `RESEND_API_KEY` et `RESEND_FROM_EMAIL`; vérifie le domaine expéditeur dans Resend. `RESEND_FROM_NAME` est facultative (valeur par défaut : `AeroCrash`). Resend est le secours après échec Gmail; si Gmail n'est pas configuré, il est utilisé après Brevo.
 - **SasPay** : dans le tableau de bord SasPay, valide le KYC et active le marchand, puis crée une clé API `LIVE` avec le scope `PAYIN` (ou `BOTH`) pour la production. Configure `SASPAY_API_KEY` uniquement dans l'environnement Render. Pour les retraits, autorise aussi l'IP du serveur dans SasPay et utilise un scope `PAYOUT` ou `BOTH`. Si un webhook est configuré, stocke aussi `SASPAY_WEBHOOK_SECRET` et indique `https://<nom-du-service>.onrender.com/api/webhook/saspay`. Une clé `sk_test_...` sert aux tests, pas aux paiements réels.
 
 Ne téléverse pas le fichier `.env`, ne le commite pas et n'utilise pas le stockage local `data/users.json` comme base de production.

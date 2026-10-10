@@ -88,21 +88,55 @@ export async function verifyEmailAddress(email: string): Promise<{ valid: boolea
   return { valid: true };
 }
 
-export async function sendTransactionalEmail(payload: {
+type TransactionalEmailPayload = {
   toEmail: string;
   toName?: string;
   subject: string;
   htmlContent: string;
-}): Promise<{ success: boolean; messageId?: string; error?: string }> {
+};
+
+const RESEND_FAILOVER_DELAY_MS = 10_000;
+
+async function retryWithResendAfterGmailFailure(
+  payload: TransactionalEmailPayload,
+  gmailError: string,
+): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  const hasResendConfig = Boolean(
+    process.env.RESEND_API_KEY?.trim() && process.env.RESEND_FROM_EMAIL?.trim(),
+  );
+  if (!hasResendConfig) {
+    console.error('[Email Failover Error] Gmail failed and Resend is not fully configured.');
+    return { success: false, error: gmailError };
+  }
+
+  console.warn('[Email Failover] Gmail failed; trying Resend in 10 seconds.');
+  await new Promise((resolve) => setTimeout(resolve, RESEND_FAILOVER_DELAY_MS));
+
+  const resendResult = await sendTransactionalEmail(payload, 'resend');
+  if (resendResult.success) {
+    console.info('[Email Failover] Resend delivered the email after Gmail failed.');
+    return resendResult;
+  }
+
+  return {
+    success: false,
+    error: `Gmail failed: ${gmailError}; Resend fallback failed: ${resendResult.error || 'unknown error'}`,
+  };
+}
+
+export async function sendTransactionalEmail(
+  payload: TransactionalEmailPayload,
+  provider: 'auto' | 'resend' = 'auto',
+): Promise<{ success: boolean; messageId?: string; error?: string }> {
   const gmailUser = (process.env.GMAIL_USER || '').trim();
   const gmailAppPassword = (process.env.GMAIL_APP_PASSWORD || '').replace(/\s+/g, '');
   const gmailFromName = (process.env.GMAIL_FROM_NAME || 'AeroCrash').trim();
 
-  if (gmailUser || gmailAppPassword) {
+  if (provider === 'auto' && (gmailUser || gmailAppPassword)) {
     if (!gmailUser || !gmailAppPassword) {
       const error = 'GMAIL_USER and GMAIL_APP_PASSWORD must both be configured.';
       console.error('[Gmail Configuration Error]', error);
-      return { success: false, error };
+      return retryWithResendAfterGmailFailure(payload, error);
     }
 
     const transporter = nodemailer.createTransport({
@@ -110,6 +144,7 @@ export async function sendTransactionalEmail(payload: {
       auth: { user: gmailUser, pass: gmailAppPassword },
     });
 
+    let gmailError = 'Erreur SMTP Gmail inconnue.';
     try {
       const result = await transporter.sendMail({
         from: { name: gmailFromName, address: gmailUser },
@@ -122,17 +157,18 @@ export async function sendTransactionalEmail(payload: {
       return { success: true, messageId: result.messageId };
     } catch (err: any) {
       console.error('[Gmail SMTP Error]', err?.code || err?.message || err);
-      return { success: false, error: err?.message || 'Erreur SMTP Gmail' };
+      gmailError = err?.message || 'Erreur SMTP Gmail';
     } finally {
       transporter.close();
     }
+    return retryWithResendAfterGmailFailure(payload, gmailError);
   }
 
   const brevoApiKey = (process.env.BREVO_API_KEY || '').trim();
   const brevoSenderEmail = (process.env.BREVO_FROM_EMAIL || '').trim();
   const brevoSenderName = (process.env.BREVO_FROM_NAME || 'AeroCrash').trim();
 
-  if (brevoApiKey) {
+  if (provider === 'auto' && brevoApiKey) {
     if (!brevoSenderEmail) {
       const error = 'BREVO_FROM_EMAIL must be configured when BREVO_API_KEY is set.';
       console.error('[Brevo Configuration Error]', error);
