@@ -956,7 +956,60 @@ const handlePaymentStatus = async (req: Request, res: Response): Promise<void> =
   const diagnosticId = randomUUID();
   try {
     const verifyRes = await verifySaspayPayment(paymentId, diagnosticId);
-    const found = UserDatabase.findBySaspayPaymentId(paymentId);
+    let found = UserDatabase.findBySaspayPaymentId(paymentId);
+
+    if (!found && isDatabaseConfigured()) {
+      try {
+        const databaseFound = await PostgresDatabase.findTransactionBySaspayId(paymentId);
+        if (databaseFound) {
+          const transaction = databaseFound.transaction;
+          found = {
+            user: {
+              id: databaseFound.user.id,
+              name: databaseFound.user.name,
+              email: databaseFound.user.email,
+              password: '',
+              country: databaseFound.user.country,
+              balance: databaseFound.user.balance,
+              isActivated: databaseFound.user.is_activated,
+              createdAt: databaseFound.user.created_at,
+              updatedAt: databaseFound.user.updated_at,
+              bets: [],
+              transactions: [],
+            },
+            transaction: {
+              id: transaction.id,
+              userId: transaction.user_id,
+              type: transaction.type,
+              amount: transaction.amount,
+              method: transaction.method,
+              phone: transaction.phone_number || '',
+              phoneNumber: transaction.phone_number || '',
+              reference: transaction.reference,
+              status: transaction.status,
+              timestamp: new Date(transaction.created_at).getTime(),
+              saspayPaymentId: transaction.saspay_payment_id,
+              checkoutUrl: transaction.checkout_url,
+            },
+          };
+        }
+      } catch (err: any) {
+        console.error(JSON.stringify({
+          event: 'saspay.payment_transaction_lookup_failed',
+          diagnosticId,
+          paymentId,
+          errorName: err?.name || 'Error',
+          errorMessage: err?.message || String(err),
+          stack: err?.stack,
+        }));
+        res.status(503).json({
+          success: false,
+          message: 'Impossible de récupérer la transaction dans la base de données.',
+          diagnosticId,
+        });
+        return;
+      }
+    }
 
     if (verifyRes.status === 'SUCCESS' && !found) {
       console.error(JSON.stringify({
@@ -1021,7 +1074,7 @@ const handlePaymentStatus = async (req: Request, res: Response): Promise<void> =
       return;
     }
 
-    if (verifyRes.status === 'FAILED' && found) {
+    if (verifyRes.success && verifyRes.status === 'FAILED' && found) {
       UserDatabase.updateTransaction(found.user.id, paymentId, { status: 'failed' });
       if (isDatabaseConfigured()) {
         try {
@@ -1040,8 +1093,8 @@ const handlePaymentStatus = async (req: Request, res: Response): Promise<void> =
       }
     }
 
-    res.json({
-      success: true,
+    res.status(verifyRes.success ? 200 : 502).json({
+      success: verifyRes.success,
       status: verifyRes.status,
       message: verifyRes.message,
       ...(!verifyRes.success ? { diagnosticId } : {}),

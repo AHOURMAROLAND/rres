@@ -43,7 +43,9 @@ function getSaspayError(response: any, status: number, operation: 'payment' | 'p
     ? response.error.code
     : typeof response?.code === 'string'
       ? response.code
-      : undefined;
+      : status === 401
+        ? 'api_key_rejected'
+        : undefined;
   const apiMessage = response?.error?.message || response?.message;
   const validationMessages = Object.values(response || {})
     .filter((value): value is string[] => Array.isArray(value))
@@ -332,6 +334,7 @@ export async function createSaspayPayment(params: SaspayPaymentParams): Promise<
       diagnosticId: params.diagnosticId,
       httpStatus: res.status,
       gatewayCode: error.code || 'unknown',
+      apiKeyMode: apiKey.startsWith('sk_live_') ? 'live' : apiKey.startsWith('sk_test_') ? 'test' : 'unknown',
     }));
     return {
       success: false,
@@ -385,6 +388,7 @@ export async function verifySaspayPayment(paymentId: string, diagnosticId?: stri
       diagnosticId,
       httpStatus: res.status,
       gatewayCode: error.code || 'unknown',
+      apiKeyMode: apiKey.startsWith('sk_live_') ? 'live' : apiKey.startsWith('sk_test_') ? 'test' : 'unknown',
     }));
     return {
       success: false,

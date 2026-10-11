@@ -1,4 +1,5 @@
 import dns from 'node:dns/promises';
+import { setDefaultResultOrder } from 'node:dns';
 import { createHmac, randomUUID } from 'node:crypto';
 import nodemailer from 'nodemailer';
 import { isDatabaseConfigured, PostgresDatabase } from './database.js';
@@ -95,8 +96,6 @@ type TransactionalEmailPayload = {
   htmlContent: string;
 };
 
-const RESEND_FAILOVER_DELAY_MS = 10_000;
-
 type EmailSendResult = { success: boolean; messageId?: string; error?: string; diagnosticId?: string };
 
 function redactEmailAddresses(message: string): string {
@@ -128,8 +127,12 @@ async function sendWithGmail(payload: TransactionalEmailPayload, diagnosticId: s
   const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: { user: gmailUser, pass: gmailAppPassword },
+    connectionTimeout: 15_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 30_000,
   });
   try {
+    setDefaultResultOrder('ipv4first');
     const result = await transporter.sendMail({
       from: { name: gmailFromName, address: gmailUser },
       to: payload.toName
@@ -261,79 +264,42 @@ export async function sendTransactionalEmail(
   payload: TransactionalEmailPayload,
 ): Promise<EmailSendResult> {
   const diagnosticId = randomUUID();
-  const configuredProviders: Array<'brevo' | 'resend' | 'gmail'> = [];
-  const brevoConfigured = Boolean(
-    process.env.BREVO_API_KEY?.trim() || process.env.BREVO_FROM_EMAIL?.trim(),
-  );
-  const resendConfigured = Boolean(
-    process.env.RESEND_API_KEY?.trim() || process.env.RESEND_FROM_EMAIL?.trim(),
-  );
   const gmailConfigured = Boolean(
-    process.env.GMAIL_USER?.trim() || process.env.GMAIL_APP_PASSWORD?.trim(),
+    process.env.GMAIL_USER?.trim() && process.env.GMAIL_APP_PASSWORD?.trim(),
   );
-  if (brevoConfigured) configuredProviders.push('brevo');
-  if (resendConfigured) configuredProviders.push('resend');
-  if (gmailConfigured) configuredProviders.push('gmail');
 
-  if (configuredProviders.length === 0 && process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+  if (!gmailConfigured && process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
     console.log(`[Email Simulation] To: ${payload.toEmail} | Subject: "${payload.subject}"`);
     return { success: true, messageId: 'simulated_' + Date.now(), diagnosticId };
   }
 
-  if (configuredProviders.length === 0) {
+  if (!gmailConfigured) {
     console.error(JSON.stringify({
       event: 'email.no_provider_configured',
       diagnosticId,
-      providers: { brevo: brevoConfigured, resend: resendConfigured, gmail: gmailConfigured },
+      provider: 'gmail',
+      gmailUserConfigured: Boolean(process.env.GMAIL_USER?.trim()),
+      gmailAppPasswordConfigured: Boolean(process.env.GMAIL_APP_PASSWORD?.trim()),
     }));
     return {
       success: false,
-      error: 'Configure Brevo, Resend, or Gmail to send email.',
+      error: 'Configure GMAIL_USER and GMAIL_APP_PASSWORD to send email.',
       diagnosticId,
     };
   }
 
-  const errors: string[] = [];
-  for (const provider of configuredProviders) {
-    if (provider === 'resend' && configuredProviders[0] === 'brevo') {
-      console.warn(JSON.stringify({
-        event: 'email.failover_wait',
-        diagnosticId,
-        fromProvider: 'Brevo',
-        toProvider: 'Resend',
-        delayMs: RESEND_FAILOVER_DELAY_MS,
-      }));
-      await new Promise((resolve) => setTimeout(resolve, RESEND_FAILOVER_DELAY_MS));
-    }
-
-    console.info(JSON.stringify({ event: 'email.provider_attempt', diagnosticId, provider }));
-    const result = provider === 'brevo'
-      ? await sendWithBrevo(payload, diagnosticId)
-      : provider === 'resend'
-        ? await sendWithResend(payload, diagnosticId)
-        : await sendWithGmail(payload, diagnosticId);
-
-    if (result.success) {
-      console.info(JSON.stringify({
-        event: 'email.delivered',
-        diagnosticId,
-        provider,
-        failoverUsed: errors.length > 0,
-      }));
-      return { ...result, diagnosticId };
-    }
-
-    const providerName = provider[0].toUpperCase() + provider.slice(1);
-    errors.push(`${providerName}: ${result.error || 'unknown error'}`);
+  console.info(JSON.stringify({ event: 'email.provider_attempt', diagnosticId, provider: 'gmail' }));
+  const result = await sendWithGmail(payload, diagnosticId);
+  if (result.success) {
+    console.info(JSON.stringify({ event: 'email.delivered', diagnosticId, provider: 'gmail' }));
+    return { ...result, diagnosticId };
   }
 
-  const error = errors.length > 0
-    ? errors.join('; ')
-    : 'Configure Brevo, Resend, or Gmail to send email.';
+  const error = result.error || 'Gmail email delivery failed.';
   console.error(JSON.stringify({
     event: 'email.delivery_failed',
     diagnosticId,
-    providersAttempted: configuredProviders,
+    provider: 'gmail',
     error: redactEmailAddresses(error),
   }));
   return { success: false, error, diagnosticId };
