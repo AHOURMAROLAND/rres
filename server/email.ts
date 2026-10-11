@@ -1,5 +1,4 @@
 import dns from 'node:dns/promises';
-import { setDefaultResultOrder } from 'node:dns';
 import { createHmac, randomUUID } from 'node:crypto';
 import nodemailer from 'nodemailer';
 import { isDatabaseConfigured, PostgresDatabase } from './database.js';
@@ -115,46 +114,6 @@ function getEmailErrorDetails(error: unknown): { errorName: string; errorMessage
   };
 }
 
-async function sendWithGmail(payload: TransactionalEmailPayload, diagnosticId: string): Promise<EmailSendResult> {
-  const gmailUser = (process.env.GMAIL_USER || '').trim();
-  const gmailAppPassword = (process.env.GMAIL_APP_PASSWORD || '').replace(/\s+/g, '');
-  const gmailFromName = (process.env.GMAIL_FROM_NAME || 'AeroCrash').trim();
-
-  if (!gmailUser || !gmailAppPassword) {
-    return { success: false, error: 'GMAIL_USER and GMAIL_APP_PASSWORD must both be configured.' };
-  }
-
-  const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: { user: gmailUser, pass: gmailAppPassword },
-    connectionTimeout: 15_000,
-    greetingTimeout: 10_000,
-    socketTimeout: 30_000,
-  });
-  try {
-    setDefaultResultOrder('ipv4first');
-    const result = await transporter.sendMail({
-      from: { name: gmailFromName, address: gmailUser },
-      to: payload.toName
-        ? { name: payload.toName, address: payload.toEmail.trim() }
-        : payload.toEmail.trim(),
-      subject: payload.subject,
-      html: payload.htmlContent,
-    });
-    return { success: true, messageId: result.messageId };
-  } catch (err: any) {
-    console.error(JSON.stringify({
-      event: 'email.provider_failed',
-      diagnosticId,
-      provider: 'Gmail',
-      ...getEmailErrorDetails(err),
-    }));
-    return { success: false, error: err?.message || 'Erreur SMTP Gmail' };
-  } finally {
-    transporter.close();
-  }
-}
-
 async function sendWithBrevo(payload: TransactionalEmailPayload, diagnosticId: string): Promise<EmailSendResult> {
   const brevoApiKey = (process.env.BREVO_API_KEY || '').trim();
   const brevoSenderEmail = (process.env.BREVO_FROM_EMAIL || '').trim();
@@ -260,6 +219,56 @@ async function sendWithResend(payload: TransactionalEmailPayload, diagnosticId: 
   }
 }
 
+async function sendWithGmail(payload: TransactionalEmailPayload, diagnosticId: string): Promise<EmailSendResult> {
+  const gmailUser = (process.env.GMAIL_USER || '').trim();
+  const gmailAppPassword = (process.env.GMAIL_APP_PASSWORD || '').replace(/\s+/g, '');
+  const gmailFromName = (process.env.GMAIL_FROM_NAME || 'AeroCrash').trim();
+
+  if (!gmailUser || !gmailAppPassword) {
+    return { success: false, error: 'GMAIL_USER and GMAIL_APP_PASSWORD must both be configured.' };
+  }
+
+  try {
+    const [ipv4Address] = await dns.resolve4('smtp.gmail.com');
+    if (!ipv4Address) {
+      throw new Error('No IPv4 address found for smtp.gmail.com');
+    }
+
+    const transporter = nodemailer.createTransport({
+      host: ipv4Address,
+      port: 587,
+      secure: false,
+      requireTLS: true,
+      auth: { user: gmailUser, pass: gmailAppPassword },
+      tls: { servername: 'smtp.gmail.com' },
+      connectionTimeout: 15_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 30_000,
+    });
+    try {
+      const result = await transporter.sendMail({
+        from: { name: gmailFromName, address: gmailUser },
+        to: payload.toName
+          ? { name: payload.toName, address: payload.toEmail.trim() }
+          : payload.toEmail.trim(),
+        subject: payload.subject,
+        html: payload.htmlContent,
+      });
+      return { success: true, messageId: result.messageId };
+    } finally {
+      transporter.close();
+    }
+  } catch (err: any) {
+    console.error(JSON.stringify({
+      event: 'email.provider_failed',
+      diagnosticId,
+      provider: 'Gmail',
+      ...getEmailErrorDetails(err),
+    }));
+    return { success: false, error: err?.message || 'Erreur SMTP Gmail' };
+  }
+}
+
 export async function sendTransactionalEmail(
   payload: TransactionalEmailPayload,
 ): Promise<EmailSendResult> {
@@ -278,8 +287,8 @@ export async function sendTransactionalEmail(
       event: 'email.no_provider_configured',
       diagnosticId,
       provider: 'gmail',
-      gmailUserConfigured: Boolean(process.env.GMAIL_USER?.trim()),
-      gmailAppPasswordConfigured: Boolean(process.env.GMAIL_APP_PASSWORD?.trim()),
+      usernameConfigured: Boolean(process.env.GMAIL_USER?.trim()),
+      appPasswordConfigured: Boolean(process.env.GMAIL_APP_PASSWORD?.trim()),
     }));
     return {
       success: false,
@@ -288,7 +297,7 @@ export async function sendTransactionalEmail(
     };
   }
 
-  console.info(JSON.stringify({ event: 'email.provider_attempt', diagnosticId, provider: 'gmail' }));
+  console.info(JSON.stringify({ event: 'email.provider_attempt', diagnosticId, provider: 'gmail', host: 'smtp.gmail.com', port: 587, addressFamily: 4 }));
   const result = await sendWithGmail(payload, diagnosticId);
   if (result.success) {
     console.info(JSON.stringify({ event: 'email.delivered', diagnosticId, provider: 'gmail' }));
