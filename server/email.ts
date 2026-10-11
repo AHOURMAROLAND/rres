@@ -1,6 +1,5 @@
 import dns from 'node:dns/promises';
 import { createHmac, randomUUID } from 'node:crypto';
-import nodemailer from 'nodemailer';
 import { isDatabaseConfigured, PostgresDatabase } from './database.js';
 
 // In-memory OTP storage with TTL (10 minutes)
@@ -221,51 +220,98 @@ async function sendWithResend(payload: TransactionalEmailPayload, diagnosticId: 
 
 async function sendWithGmail(payload: TransactionalEmailPayload, diagnosticId: string): Promise<EmailSendResult> {
   const gmailUser = (process.env.GMAIL_USER || '').trim();
-  const gmailAppPassword = (process.env.GMAIL_APP_PASSWORD || '').replace(/\s+/g, '');
+  const clientId = (process.env.GMAIL_OAUTH_CLIENT_ID || '').trim();
+  const clientSecret = (process.env.GMAIL_OAUTH_CLIENT_SECRET || '').trim();
+  const refreshToken = (process.env.GMAIL_OAUTH_REFRESH_TOKEN || '').trim();
   const gmailFromName = (process.env.GMAIL_FROM_NAME || 'AeroCrash').trim();
 
-  if (!gmailUser || !gmailAppPassword) {
-    return { success: false, error: 'GMAIL_USER and GMAIL_APP_PASSWORD must both be configured.' };
+  if (!gmailUser || !clientId || !clientSecret || !refreshToken) {
+    return {
+      success: false,
+      error: 'GMAIL_USER, GMAIL_OAUTH_CLIENT_ID, GMAIL_OAUTH_CLIENT_SECRET and GMAIL_OAUTH_REFRESH_TOKEN must all be configured.',
+    };
   }
 
   try {
-    const [ipv4Address] = await dns.resolve4('smtp.gmail.com');
-    if (!ipv4Address) {
-      throw new Error('No IPv4 address found for smtp.gmail.com');
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+        grant_type: 'refresh_token',
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const tokenData = await tokenResponse.json().catch(() => ({})) as {
+      access_token?: string;
+      error?: string;
+      error_description?: string;
+    };
+    if (!tokenResponse.ok || !tokenData.access_token) {
+      const error = tokenData.error_description || tokenData.error || `Google OAuth HTTP ${tokenResponse.status}`;
+      console.error(JSON.stringify({
+        event: 'email.provider_failed',
+        diagnosticId,
+        provider: 'Gmail API',
+        httpStatus: tokenResponse.status,
+        errorCode: tokenData.error,
+        errorMessage: redactEmailAddresses(error),
+      }));
+      return { success: false, error };
     }
 
-    const transporter = nodemailer.createTransport({
-      host: ipv4Address,
-      port: 587,
-      secure: false,
-      requireTLS: true,
-      auth: { user: gmailUser, pass: gmailAppPassword },
-      tls: { servername: 'smtp.gmail.com' },
-      connectionTimeout: 15_000,
-      greetingTimeout: 10_000,
-      socketTimeout: 30_000,
+    const encodeHeader = (value: string) =>
+      `=?UTF-8?B?${Buffer.from(value.replace(/[\r\n]+/g, ' ').trim()).toString('base64')}?=`;
+    const formatAddress = (email: string, name?: string) =>
+      name ? `${encodeHeader(name)} <${email.replace(/[\r\n<>]/g, '')}>` : email.replace(/[\r\n<>]/g, '');
+    const encodedHtml = Buffer.from(payload.htmlContent, 'utf8').toString('base64').match(/.{1,76}/g)?.join('\r\n') || '';
+    const mimeMessage = [
+      `From: ${formatAddress(gmailUser, gmailFromName)}`,
+      `To: ${formatAddress(payload.toEmail.trim(), payload.toName)}`,
+      `Subject: ${encodeHeader(payload.subject)}`,
+      'MIME-Version: 1.0',
+      'Content-Type: text/html; charset=UTF-8',
+      'Content-Transfer-Encoding: base64',
+      '',
+      encodedHtml,
+    ].join('\r\n');
+    const raw = Buffer.from(mimeMessage, 'utf8').toString('base64url');
+    const sendResponse = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${tokenData.access_token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ raw }),
+      signal: AbortSignal.timeout(20_000),
     });
-    try {
-      const result = await transporter.sendMail({
-        from: { name: gmailFromName, address: gmailUser },
-        to: payload.toName
-          ? { name: payload.toName, address: payload.toEmail.trim() }
-          : payload.toEmail.trim(),
-        subject: payload.subject,
-        html: payload.htmlContent,
-      });
-      return { success: true, messageId: result.messageId };
-    } finally {
-      transporter.close();
+    const sendData = await sendResponse.json().catch(() => ({})) as {
+      id?: string;
+      error?: { code?: number; message?: string; status?: string };
+    };
+    if (!sendResponse.ok || !sendData.id) {
+      const error = sendData.error?.message || `Gmail API HTTP ${sendResponse.status}`;
+      console.error(JSON.stringify({
+        event: 'email.provider_failed',
+        diagnosticId,
+        provider: 'Gmail API',
+        httpStatus: sendResponse.status,
+        errorCode: sendData.error?.status,
+        errorMessage: redactEmailAddresses(error),
+      }));
+      return { success: false, error };
     }
+    return { success: true, messageId: sendData.id };
   } catch (err: any) {
     console.error(JSON.stringify({
       event: 'email.provider_failed',
       diagnosticId,
-      provider: 'Gmail',
+      provider: 'Gmail API',
       ...getEmailErrorDetails(err),
     }));
-    return { success: false, error: err?.message || 'Erreur SMTP Gmail' };
+    return { success: false, error: err?.message || 'Erreur API Gmail' };
   }
 }
 
@@ -274,7 +320,10 @@ export async function sendTransactionalEmail(
 ): Promise<EmailSendResult> {
   const diagnosticId = randomUUID();
   const gmailConfigured = Boolean(
-    process.env.GMAIL_USER?.trim() && process.env.GMAIL_APP_PASSWORD?.trim(),
+    process.env.GMAIL_USER?.trim()
+      && process.env.GMAIL_OAUTH_CLIENT_ID?.trim()
+      && process.env.GMAIL_OAUTH_CLIENT_SECRET?.trim()
+      && process.env.GMAIL_OAUTH_REFRESH_TOKEN?.trim(),
   );
 
   if (!gmailConfigured && process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
@@ -288,27 +337,29 @@ export async function sendTransactionalEmail(
       diagnosticId,
       provider: 'gmail',
       usernameConfigured: Boolean(process.env.GMAIL_USER?.trim()),
-      appPasswordConfigured: Boolean(process.env.GMAIL_APP_PASSWORD?.trim()),
+      oauthClientConfigured: Boolean(process.env.GMAIL_OAUTH_CLIENT_ID?.trim()),
+      oauthSecretConfigured: Boolean(process.env.GMAIL_OAUTH_CLIENT_SECRET?.trim()),
+      refreshTokenConfigured: Boolean(process.env.GMAIL_OAUTH_REFRESH_TOKEN?.trim()),
     }));
     return {
       success: false,
-      error: 'Configure GMAIL_USER and GMAIL_APP_PASSWORD to send email.',
+      error: 'Configure Gmail API OAuth credentials to send email.',
       diagnosticId,
     };
   }
 
-  console.info(JSON.stringify({ event: 'email.provider_attempt', diagnosticId, provider: 'gmail', host: 'smtp.gmail.com', port: 587, addressFamily: 4 }));
+  console.info(JSON.stringify({ event: 'email.provider_attempt', diagnosticId, provider: 'gmail_api' }));
   const result = await sendWithGmail(payload, diagnosticId);
   if (result.success) {
-    console.info(JSON.stringify({ event: 'email.delivered', diagnosticId, provider: 'gmail' }));
+    console.info(JSON.stringify({ event: 'email.delivered', diagnosticId, provider: 'gmail_api' }));
     return { ...result, diagnosticId };
   }
 
-  const error = result.error || 'Gmail email delivery failed.';
+  const error = result.error || 'Gmail API email delivery failed.';
   console.error(JSON.stringify({
     event: 'email.delivery_failed',
     diagnosticId,
-    provider: 'gmail',
+    provider: 'gmail_api',
     error: redactEmailAddresses(error),
   }));
   return { success: false, error, diagnosticId };
