@@ -214,6 +214,7 @@ const handleSendRegisterOtp = async (req: Request, res: Response): Promise<void>
       res.status(503).json({
         success: false,
         message: "L'envoi de l'email est temporairement indisponible. Veuillez réessayer plus tard.",
+        diagnosticId: emailResult.diagnosticId,
       });
       return;
     }
@@ -274,6 +275,7 @@ const handleForgotPasswordRequest = async (req: Request, res: Response): Promise
       res.status(503).json({
         success: false,
         message: "L'envoi de l'email est temporairement indisponible. Veuillez réessayer plus tard.",
+        diagnosticId: emailResult.diagnosticId,
       });
       return;
     }
@@ -823,12 +825,14 @@ const handleDeposit = async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
+  const diagnosticId = randomUUID();
   try {
     const saspayResult = await createSaspayPayment({
       amount: numAmount,
       country: country || user.country || 'CI',
       method,
       idempotencyKey: randomUUID(),
+      diagnosticId,
       customer: {
         first_name: user.name.split(' ')[0] || 'Joueur',
         last_name: user.name.split(' ').slice(1).join(' ') || 'AeroCrash',
@@ -846,6 +850,7 @@ const handleDeposit = async (req: Request, res: Response): Promise<void> => {
         message: saspayResult.message || 'Échec de l\'initialisation du paiement sécurisé.',
         gatewayStatus: saspayResult.gatewayStatus,
         gatewayCode: saspayResult.gatewayCode,
+        diagnosticId,
       });
       return;
     }
@@ -880,7 +885,16 @@ const handleDeposit = async (req: Request, res: Response): Promise<void> => {
           saspay_payment_id: saspayResult.paymentId,
           checkout_url: saspayResult.checkoutUrl,
         });
-      } catch (err) {}
+      } catch (err: any) {
+        console.error(JSON.stringify({
+          event: 'saspay.payment_transaction_persistence_failed',
+          diagnosticId,
+          paymentId: saspayResult.paymentId,
+          errorName: err?.name || 'Error',
+          errorMessage: err?.message || String(err),
+          stack: err?.stack,
+        }));
+      }
     }
 
     res.json({
@@ -896,10 +910,17 @@ const handleDeposit = async (req: Request, res: Response): Promise<void> => {
     });
     return;
   } catch (err: any) {
-    console.error('Payment deposit error:', err);
+    console.error(JSON.stringify({
+      event: 'saspay.payment_initiation_exception',
+      diagnosticId,
+      errorName: err?.name || 'Error',
+      errorMessage: err?.message || String(err),
+      stack: err?.stack,
+    }));
     res.status(500).json({
       success: false,
       message: err?.message || 'Erreur lors de la communication avec la passerelle de paiement sécurisée.',
+      diagnosticId,
     });
     return;
   }
@@ -932,9 +953,18 @@ const handlePaymentStatus = async (req: Request, res: Response): Promise<void> =
     return;
   }
 
+  const diagnosticId = randomUUID();
   try {
-    const verifyRes = await verifySaspayPayment(paymentId);
+    const verifyRes = await verifySaspayPayment(paymentId, diagnosticId);
     const found = UserDatabase.findBySaspayPaymentId(paymentId);
+
+    if (verifyRes.status === 'SUCCESS' && !found) {
+      console.error(JSON.stringify({
+        event: 'saspay.payment_confirmed_transaction_missing',
+        diagnosticId,
+        databaseConfigured: isDatabaseConfigured(),
+      }));
+    }
 
     if (verifyRes.status === 'SUCCESS' && found) {
       if (found.transaction.status === 'pending') {
@@ -955,7 +985,17 @@ const handlePaymentStatus = async (req: Request, res: Response): Promise<void> =
           try {
             await PostgresDatabase.updateBalance(found.user.id, newBalance, true);
             await PostgresDatabase.updateTransactionStatus(paymentId, 'success');
-          } catch (err) {}
+          } catch (err: any) {
+            console.error(JSON.stringify({
+              event: 'saspay.payment_balance_persistence_failed',
+              diagnosticId,
+              paymentId,
+              userId: found.user.id,
+              errorName: err?.name || 'Error',
+              errorMessage: err?.message || String(err),
+              stack: err?.stack,
+            }));
+          }
         }
 
         const freshUser = UserDatabase.findById(found.user.id);
@@ -986,7 +1026,17 @@ const handlePaymentStatus = async (req: Request, res: Response): Promise<void> =
       if (isDatabaseConfigured()) {
         try {
           await PostgresDatabase.updateTransactionStatus(paymentId, 'failed');
-        } catch (err) {}
+        } catch (err: any) {
+          console.error(JSON.stringify({
+            event: 'saspay.payment_failure_status_persistence_failed',
+            diagnosticId,
+            paymentId,
+            userId: found.user.id,
+            errorName: err?.name || 'Error',
+            errorMessage: err?.message || String(err),
+            stack: err?.stack,
+          }));
+        }
       }
     }
 
@@ -994,9 +1044,21 @@ const handlePaymentStatus = async (req: Request, res: Response): Promise<void> =
       success: true,
       status: verifyRes.status,
       message: verifyRes.message,
+      ...(!verifyRes.success ? { diagnosticId } : {}),
     });
   } catch (err: any) {
-    res.status(500).json({ success: false, message: err?.message || 'Erreur lors de la vérification du paiement' });
+    console.error(JSON.stringify({
+      event: 'saspay.payment_verification_exception',
+      diagnosticId,
+      errorName: err?.name || 'Error',
+      errorMessage: err?.message || String(err),
+      stack: err?.stack,
+    }));
+    res.status(500).json({
+      success: false,
+      message: err?.message || 'Erreur lors de la vérification du paiement',
+      diagnosticId,
+    });
   }
 };
 app.get('/api/user/payment-status/:paymentId', handlePaymentStatus);
@@ -1193,6 +1255,7 @@ app.post('/withdraw', handleWithdraw);
 
 // SasPay Webhook Endpoint (Strict idempotency & HMAC verification)
 const handleSaspayWebhook = async (req: Request, res: Response): Promise<void> => {
+  const diagnosticId = randomUUID();
   const sig = (req.headers['x-webhook-signature'] as string) || '';
   const timestamp = (req.headers['x-webhook-timestamp'] as string) || '';
   const rawBody = (req as any).rawBody || JSON.stringify(req.body);
@@ -1200,14 +1263,24 @@ const handleSaspayWebhook = async (req: Request, res: Response): Promise<void> =
   if (process.env.SASPAY_WEBHOOK_SECRET) {
     const isValid = verifySaspayWebhookSignature(rawBody, sig, timestamp);
     if (!isValid) {
-      console.warn('SasPay Webhook: Invalid signature or timestamp rejected');
-      res.status(403).json({ error: 'Signature invalide ou délai dépassé' });
+      console.warn(JSON.stringify({
+        event: 'saspay.webhook_signature_rejected',
+        diagnosticId,
+        signaturePresent: Boolean(sig),
+        timestampPresent: Boolean(timestamp),
+      }));
+      res.status(403).json({ error: 'Signature invalide ou délai dépassé', diagnosticId });
       return;
     }
   }
 
   const { event, data } = req.body || {};
-  console.log(`[SasPay Webhook] Event received: ${event}`, data?.id);
+  console.info(JSON.stringify({
+    event: 'saspay.webhook_received',
+    diagnosticId,
+    webhookEvent: event || 'unknown',
+    paymentId: data?.id,
+  }));
 
   if (event === 'transaction.success' && data?.id) {
     // 1. Look up transaction in local DB
@@ -1235,7 +1308,25 @@ const handleSaspayWebhook = async (req: Request, res: Response): Promise<void> =
             transaction: neonFound.transaction,
           };
         }
-      } catch (err) {}
+      } catch (err: any) {
+        console.error(JSON.stringify({
+          event: 'saspay.webhook_transaction_lookup_failed',
+          diagnosticId,
+          paymentId: data.id,
+          errorName: err?.name || 'Error',
+          errorMessage: err?.message || String(err),
+          stack: err?.stack,
+        }));
+      }
+    }
+
+    if (!found) {
+      console.error(JSON.stringify({
+        event: 'saspay.webhook_transaction_not_found',
+        diagnosticId,
+        paymentId: data.id,
+        databaseConfigured: isDatabaseConfigured(),
+      }));
     }
 
     if (found) {
@@ -1264,7 +1355,17 @@ const handleSaspayWebhook = async (req: Request, res: Response): Promise<void> =
           try {
             await PostgresDatabase.updateBalance(found.user.id, newBalance, true);
             await PostgresDatabase.updateTransactionStatus(data.id, 'success');
-          } catch (err) {}
+          } catch (err: any) {
+            console.error(JSON.stringify({
+              event: 'saspay.webhook_balance_persistence_failed',
+              diagnosticId,
+              paymentId: data.id,
+              userId: found.user.id,
+              errorName: err?.name || 'Error',
+              errorMessage: err?.message || String(err),
+              stack: err?.stack,
+            }));
+          }
         }
         console.log(`[SasPay Webhook] Account ${found.user.id} credited with +${addedAmount} FCFA`);
 
@@ -1281,7 +1382,17 @@ const handleSaspayWebhook = async (req: Request, res: Response): Promise<void> =
       if (isDatabaseConfigured()) {
         try {
           await PostgresDatabase.updateTransactionStatus(data.id, 'failed');
-        } catch (err) {}
+        } catch (err: any) {
+          console.error(JSON.stringify({
+            event: 'saspay.webhook_failure_status_persistence_failed',
+            diagnosticId,
+            paymentId: data.id,
+            userId: found.user.id,
+            errorName: err?.name || 'Error',
+            errorMessage: err?.message || String(err),
+            stack: err?.stack,
+          }));
+        }
       }
     }
   }

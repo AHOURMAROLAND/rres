@@ -1,5 +1,5 @@
 import dns from 'node:dns/promises';
-import { createHmac } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import nodemailer from 'nodemailer';
 import { isDatabaseConfigured, PostgresDatabase } from './database.js';
 
@@ -97,137 +97,119 @@ type TransactionalEmailPayload = {
 
 const RESEND_FAILOVER_DELAY_MS = 10_000;
 
-async function retryWithResendAfterGmailFailure(
-  payload: TransactionalEmailPayload,
-  gmailError: string,
-): Promise<{ success: boolean; messageId?: string; error?: string }> {
-  const hasResendConfig = Boolean(
-    process.env.RESEND_API_KEY?.trim() && process.env.RESEND_FROM_EMAIL?.trim(),
-  );
-  if (!hasResendConfig) {
-    console.error('[Email Failover Error] Gmail failed and Resend is not fully configured.');
-    return { success: false, error: gmailError };
+type EmailSendResult = { success: boolean; messageId?: string; error?: string; diagnosticId?: string };
+
+function redactEmailAddresses(message: string): string {
+  return message.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[redacted-email]');
+}
+
+function getEmailErrorDetails(error: unknown): { errorName: string; errorMessage: string; errorCode?: string } {
+  if (!(error instanceof Error)) {
+    return { errorName: 'UnknownError', errorMessage: redactEmailAddresses(String(error)) };
   }
 
-  console.warn('[Email Failover] Gmail failed; trying Resend in 10 seconds.');
-  await new Promise((resolve) => setTimeout(resolve, RESEND_FAILOVER_DELAY_MS));
-
-  const resendResult = await sendTransactionalEmail(payload, 'resend');
-  if (resendResult.success) {
-    console.info('[Email Failover] Resend delivered the email after Gmail failed.');
-    return resendResult;
-  }
-
+  const errorCode = 'code' in error && typeof error.code === 'string' ? error.code : undefined;
   return {
-    success: false,
-    error: `Gmail failed: ${gmailError}; Resend fallback failed: ${resendResult.error || 'unknown error'}`,
+    errorName: error.name,
+    errorMessage: redactEmailAddresses(error.message),
+    ...(errorCode ? { errorCode } : {}),
   };
 }
 
-export async function sendTransactionalEmail(
-  payload: TransactionalEmailPayload,
-  provider: 'auto' | 'resend' = 'auto',
-): Promise<{ success: boolean; messageId?: string; error?: string }> {
+async function sendWithGmail(payload: TransactionalEmailPayload, diagnosticId: string): Promise<EmailSendResult> {
   const gmailUser = (process.env.GMAIL_USER || '').trim();
   const gmailAppPassword = (process.env.GMAIL_APP_PASSWORD || '').replace(/\s+/g, '');
   const gmailFromName = (process.env.GMAIL_FROM_NAME || 'AeroCrash').trim();
 
-  if (provider === 'auto' && (gmailUser || gmailAppPassword)) {
-    if (!gmailUser || !gmailAppPassword) {
-      const error = 'GMAIL_USER and GMAIL_APP_PASSWORD must both be configured.';
-      console.error('[Gmail Configuration Error]', error);
-      return retryWithResendAfterGmailFailure(payload, error);
-    }
-
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: { user: gmailUser, pass: gmailAppPassword },
-    });
-
-    let gmailError = 'Erreur SMTP Gmail inconnue.';
-    try {
-      const result = await transporter.sendMail({
-        from: { name: gmailFromName, address: gmailUser },
-        to: payload.toName
-          ? { name: payload.toName, address: payload.toEmail.trim() }
-          : payload.toEmail.trim(),
-        subject: payload.subject,
-        html: payload.htmlContent,
-      });
-      return { success: true, messageId: result.messageId };
-    } catch (err: any) {
-      console.error('[Gmail SMTP Error]', err?.code || err?.message || err);
-      gmailError = err?.message || 'Erreur SMTP Gmail';
-    } finally {
-      transporter.close();
-    }
-    return retryWithResendAfterGmailFailure(payload, gmailError);
+  if (!gmailUser || !gmailAppPassword) {
+    return { success: false, error: 'GMAIL_USER and GMAIL_APP_PASSWORD must both be configured.' };
   }
 
+  const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user: gmailUser, pass: gmailAppPassword },
+  });
+  try {
+    const result = await transporter.sendMail({
+      from: { name: gmailFromName, address: gmailUser },
+      to: payload.toName
+        ? { name: payload.toName, address: payload.toEmail.trim() }
+        : payload.toEmail.trim(),
+      subject: payload.subject,
+      html: payload.htmlContent,
+    });
+    return { success: true, messageId: result.messageId };
+  } catch (err: any) {
+    console.error(JSON.stringify({
+      event: 'email.provider_failed',
+      diagnosticId,
+      provider: 'Gmail',
+      ...getEmailErrorDetails(err),
+    }));
+    return { success: false, error: err?.message || 'Erreur SMTP Gmail' };
+  } finally {
+    transporter.close();
+  }
+}
+
+async function sendWithBrevo(payload: TransactionalEmailPayload, diagnosticId: string): Promise<EmailSendResult> {
   const brevoApiKey = (process.env.BREVO_API_KEY || '').trim();
   const brevoSenderEmail = (process.env.BREVO_FROM_EMAIL || '').trim();
   const brevoSenderName = (process.env.BREVO_FROM_NAME || 'AeroCrash').trim();
 
-  if (provider === 'auto' && brevoApiKey) {
-    if (!brevoSenderEmail) {
-      const error = 'BREVO_FROM_EMAIL must be configured when BREVO_API_KEY is set.';
-      console.error('[Brevo Configuration Error]', error);
-      return { success: false, error };
-    }
-
-    try {
-      const res = await fetch('https://api.brevo.com/v3/smtp/email', {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-          'api-key': brevoApiKey,
-        },
-        body: JSON.stringify({
-          sender: { name: brevoSenderName, email: brevoSenderEmail },
-          to: [{ email: payload.toEmail.trim(), ...(payload.toName ? { name: payload.toName } : {}) }],
-          subject: payload.subject,
-          htmlContent: payload.htmlContent,
-        }),
-      });
-
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        const error = data?.message || `Brevo HTTP error ${res.status}`;
-        console.error('[Brevo Error]', res.status, data);
-        return { success: false, error };
-      }
-      return { success: true, messageId: data.messageId };
-    } catch (err: any) {
-      console.error('[Brevo Network Error]', err);
-      return { success: false, error: err?.message || 'Erreur réseau Brevo' };
-    }
+  if (!brevoApiKey || !brevoSenderEmail) {
+    return { success: false, error: 'BREVO_API_KEY and BREVO_FROM_EMAIL must both be configured.' };
   }
 
+  try {
+    const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'api-key': brevoApiKey,
+      },
+      body: JSON.stringify({
+        sender: { name: brevoSenderName, email: brevoSenderEmail },
+        to: [{ email: payload.toEmail.trim(), ...(payload.toName ? { name: payload.toName } : {}) }],
+        subject: payload.subject,
+        htmlContent: payload.htmlContent,
+      }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const error = data?.message || `Brevo HTTP error ${res.status}`;
+      console.error(JSON.stringify({
+        event: 'email.provider_failed',
+        diagnosticId,
+        provider: 'Brevo',
+        httpStatus: res.status,
+        errorCode: typeof data?.code === 'string' ? data.code : undefined,
+        errorMessage: redactEmailAddresses(error),
+      }));
+      return { success: false, error };
+    }
+    return { success: true, messageId: data.messageId };
+  } catch (err: any) {
+    console.error(JSON.stringify({
+      event: 'email.provider_failed',
+      diagnosticId,
+      provider: 'Brevo',
+      ...getEmailErrorDetails(err),
+    }));
+    return { success: false, error: err?.message || 'Erreur réseau Brevo' };
+  }
+}
+
+async function sendWithResend(payload: TransactionalEmailPayload, diagnosticId: string): Promise<EmailSendResult> {
   const apiKey = (process.env.RESEND_API_KEY || '').trim();
   const senderEmail = (process.env.RESEND_FROM_EMAIL || '').trim();
   const senderName = (process.env.RESEND_FROM_NAME || 'AeroCrash').trim();
 
-  if (!apiKey && process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
-    console.log(`[Email Simulation] To: ${payload.toEmail} | Subject: "${payload.subject}"`);
-    return {
-      success: true,
-      messageId: 'simulated_' + Date.now(),
-    };
-  }
-
   if (!apiKey || !senderEmail) {
-    const error = 'Configure Gmail (GMAIL_USER/GMAIL_APP_PASSWORD), Brevo, or Resend to send email.';
-    console.error('[Email Configuration Error]', error);
-    return { success: false, error };
+    return { success: false, error: 'RESEND_API_KEY and RESEND_FROM_EMAIL must both be configured.' };
   }
-
-  const body = {
-    from: `${senderName} <${senderEmail}>`,
-    to: [payload.toEmail.trim()],
-    subject: payload.subject,
-    html: payload.htmlContent,
-  };
 
   try {
     const res = await fetch('https://api.resend.com/emails', {
@@ -237,14 +219,26 @@ export async function sendTransactionalEmail(
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        from: `${senderName} <${senderEmail}>`,
+        to: [payload.toEmail.trim()],
+        subject: payload.subject,
+        html: payload.htmlContent,
+      }),
     });
 
     const data = await res.json().catch(() => ({}));
 
     if (!res.ok) {
       const errMsg = data?.message || `Resend HTTP error ${res.status}`;
-      console.error('[Resend Error]', res.status, data);
+      console.error(JSON.stringify({
+        event: 'email.provider_failed',
+        diagnosticId,
+        provider: 'Resend',
+        httpStatus: res.status,
+        errorCode: typeof data?.name === 'string' ? data.name : undefined,
+        errorMessage: redactEmailAddresses(errMsg),
+      }));
       return { success: false, error: errMsg };
     }
 
@@ -253,9 +247,96 @@ export async function sendTransactionalEmail(
       messageId: data.id,
     };
   } catch (err: any) {
-    console.error('[Resend Network Error]', err);
+    console.error(JSON.stringify({
+      event: 'email.provider_failed',
+      diagnosticId,
+      provider: 'Resend',
+      ...getEmailErrorDetails(err),
+    }));
     return { success: false, error: err?.message || 'Erreur réseau Resend' };
   }
+}
+
+export async function sendTransactionalEmail(
+  payload: TransactionalEmailPayload,
+): Promise<EmailSendResult> {
+  const diagnosticId = randomUUID();
+  const configuredProviders: Array<'brevo' | 'resend' | 'gmail'> = [];
+  const brevoConfigured = Boolean(
+    process.env.BREVO_API_KEY?.trim() || process.env.BREVO_FROM_EMAIL?.trim(),
+  );
+  const resendConfigured = Boolean(
+    process.env.RESEND_API_KEY?.trim() || process.env.RESEND_FROM_EMAIL?.trim(),
+  );
+  const gmailConfigured = Boolean(
+    process.env.GMAIL_USER?.trim() || process.env.GMAIL_APP_PASSWORD?.trim(),
+  );
+  if (brevoConfigured) configuredProviders.push('brevo');
+  if (resendConfigured) configuredProviders.push('resend');
+  if (gmailConfigured) configuredProviders.push('gmail');
+
+  if (configuredProviders.length === 0 && process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+    console.log(`[Email Simulation] To: ${payload.toEmail} | Subject: "${payload.subject}"`);
+    return { success: true, messageId: 'simulated_' + Date.now(), diagnosticId };
+  }
+
+  if (configuredProviders.length === 0) {
+    console.error(JSON.stringify({
+      event: 'email.no_provider_configured',
+      diagnosticId,
+      providers: { brevo: brevoConfigured, resend: resendConfigured, gmail: gmailConfigured },
+    }));
+    return {
+      success: false,
+      error: 'Configure Brevo, Resend, or Gmail to send email.',
+      diagnosticId,
+    };
+  }
+
+  const errors: string[] = [];
+  for (const provider of configuredProviders) {
+    if (provider === 'resend' && configuredProviders[0] === 'brevo') {
+      console.warn(JSON.stringify({
+        event: 'email.failover_wait',
+        diagnosticId,
+        fromProvider: 'Brevo',
+        toProvider: 'Resend',
+        delayMs: RESEND_FAILOVER_DELAY_MS,
+      }));
+      await new Promise((resolve) => setTimeout(resolve, RESEND_FAILOVER_DELAY_MS));
+    }
+
+    console.info(JSON.stringify({ event: 'email.provider_attempt', diagnosticId, provider }));
+    const result = provider === 'brevo'
+      ? await sendWithBrevo(payload, diagnosticId)
+      : provider === 'resend'
+        ? await sendWithResend(payload, diagnosticId)
+        : await sendWithGmail(payload, diagnosticId);
+
+    if (result.success) {
+      console.info(JSON.stringify({
+        event: 'email.delivered',
+        diagnosticId,
+        provider,
+        failoverUsed: errors.length > 0,
+      }));
+      return { ...result, diagnosticId };
+    }
+
+    const providerName = provider[0].toUpperCase() + provider.slice(1);
+    errors.push(`${providerName}: ${result.error || 'unknown error'}`);
+  }
+
+  const error = errors.length > 0
+    ? errors.join('; ')
+    : 'Configure Brevo, Resend, or Gmail to send email.';
+  console.error(JSON.stringify({
+    event: 'email.delivery_failed',
+    diagnosticId,
+    providersAttempted: configuredProviders,
+    error: redactEmailAddresses(error),
+  }));
+  return { success: false, error, diagnosticId };
 }
 
 /**

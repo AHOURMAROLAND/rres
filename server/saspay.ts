@@ -15,6 +15,7 @@ export interface SaspayPaymentParams {
   description?: string;
   returnUrl?: string;
   idempotencyKey?: string;
+  diagnosticId?: string;
   otp?: string;
 }
 
@@ -326,10 +327,12 @@ export async function createSaspayPayment(params: SaspayPaymentParams): Promise<
 
   if (!res.ok) {
     const error = getSaspayError(data, res.status, 'payment');
-    console.error('SasPay payment initiation failed:', {
-      status: res.status,
-      code: error.code || 'unknown',
-    });
+    console.error(JSON.stringify({
+      event: 'saspay.payment_initiation_failed',
+      diagnosticId: params.diagnosticId,
+      httpStatus: res.status,
+      gatewayCode: error.code || 'unknown',
+    }));
     return {
       success: false,
       message: error.message,
@@ -352,7 +355,7 @@ export async function createSaspayPayment(params: SaspayPaymentParams): Promise<
 /**
  * Checks and verifies payment status with SasPay in real time
  */
-export async function verifySaspayPayment(paymentId: string): Promise<{
+export async function verifySaspayPayment(paymentId: string, diagnosticId?: string): Promise<{
   success: boolean;
   status: 'SUCCESS' | 'PENDING' | 'FAILED' | 'CANCELLED' | string;
   reference?: string;
@@ -377,6 +380,12 @@ export async function verifySaspayPayment(paymentId: string): Promise<{
 
   if (!res.ok) {
     const error = getSaspayError(data, res.status, 'payment');
+    console.error(JSON.stringify({
+      event: 'saspay.payment_verification_failed',
+      diagnosticId,
+      httpStatus: res.status,
+      gatewayCode: error.code || 'unknown',
+    }));
     return {
       success: false,
       status: 'FAILED',
