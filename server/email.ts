@@ -322,8 +322,12 @@ export class OtpService {
     return Math.floor(100000 + Math.random() * 900000).toString();
   }
 
-  public static async setOtp(email: string, type: 'register' | 'forgot_password', payload?: any): Promise<string> {
-    const code = this.generateCode();
+  public static async setOtp(
+    email: string,
+    type: 'register' | 'forgot_password',
+    payload?: any,
+    code = this.generateCode(),
+  ): Promise<string> {
     const key = `${type}:${email.trim().toLowerCase()}`;
     const expiresAt = Date.now() + 10 * 60 * 1000;
     if (isDatabaseConfigured()) {

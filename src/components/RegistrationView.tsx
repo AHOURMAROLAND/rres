@@ -221,6 +221,7 @@ export const RegistrationView: React.FC<RegistrationViewProps> = ({ onAuthSucces
     soundManager.playClick();
     setIsLoading(true);
     setErrorMessage(null);
+    setSuccessMessage(null);
 
     const res = await AuthApi.sendRegisterOtp(email.trim().toLowerCase(), name.trim());
     setIsLoading(false);

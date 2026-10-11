@@ -202,7 +202,7 @@ const handleSendRegisterOtp = async (req: Request, res: Response): Promise<void>
     }
 
     // 3. Generate and send registration OTP
-    const otp = await OtpService.setOtp(cleanEmail, 'register', { name: cleanName });
+    const otp = OtpService.generateCode();
     const emailResult = await sendTransactionalEmail({
       toEmail: cleanEmail,
       toName: cleanName,
@@ -210,7 +210,6 @@ const handleSendRegisterOtp = async (req: Request, res: Response): Promise<void>
       htmlContent: EmailTemplates.registerOtp(cleanName, otp),
     });
     if (!emailResult.success) {
-      await OtpService.clearOtp(cleanEmail, 'register');
       res.status(503).json({
         success: false,
         message: "L'envoi de l'email est temporairement indisponible. Veuillez réessayer plus tard.",
@@ -219,6 +218,7 @@ const handleSendRegisterOtp = async (req: Request, res: Response): Promise<void>
       return;
     }
 
+    await OtpService.setOtp(cleanEmail, 'register', { name: cleanName }, otp);
     res.json({
       success: true,
       message: `Code de vérification envoyé à ${cleanEmail}. Vérifiez votre boîte de réception.`,
@@ -263,7 +263,7 @@ const handleForgotPasswordRequest = async (req: Request, res: Response): Promise
     }
 
     // 3. Generate and send password reset OTP
-    const otp = await OtpService.setOtp(cleanEmail, 'forgot_password', { userId: user.id });
+    const otp = OtpService.generateCode();
     const emailResult = await sendTransactionalEmail({
       toEmail: cleanEmail,
       toName: user.name,
@@ -271,7 +271,6 @@ const handleForgotPasswordRequest = async (req: Request, res: Response): Promise
       htmlContent: EmailTemplates.forgotPasswordOtp(user.name, otp),
     });
     if (!emailResult.success) {
-      await OtpService.clearOtp(cleanEmail, 'forgot_password');
       res.status(503).json({
         success: false,
         message: "L'envoi de l'email est temporairement indisponible. Veuillez réessayer plus tard.",
@@ -280,6 +279,7 @@ const handleForgotPasswordRequest = async (req: Request, res: Response): Promise
       return;
     }
 
+    await OtpService.setOtp(cleanEmail, 'forgot_password', { userId: user.id }, otp);
     res.json({
       success: true,
       message: `Un code de réinitialisation a été envoyé à ${cleanEmail}.`,
