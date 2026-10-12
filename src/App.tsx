@@ -16,7 +16,6 @@ import { ToastNotification } from './components/ToastNotification';
 import { RegistrationView } from './components/RegistrationView';
 import { User, GameStatus, Bet, RoundHistoryItem, LivePlayerBet, ToastMessage, GameMode, PaymentMethod, PaymentTransaction } from './types';
 import { StorageService, SavedBetRecord } from './services/storage';
-import { SupabaseService, isSupabaseConfigured } from './services/supabase';
 import { AuthApi } from './services/authApi';
 import { soundManager } from './services/sound';
 import { calculateCrashMultiplier, calculateCrashMultiplierAsync, generateSeed, sha256 } from './services/provablyFair';
@@ -106,7 +105,7 @@ export default function App() {
     sha256(serverSeed).then((hash) => setServerSeedHash(hash));
   }, [serverSeed]);
 
-  // Initial synchronization with backend / session / Supabase
+  // Initial synchronization with backend and session
   useEffect(() => {
     // 0. Check URL query parameters for return from SasPay checkout redirect
     const urlParams = new URLSearchParams(window.location.search);
@@ -165,28 +164,6 @@ export default function App() {
       setIsAuthenticated(false);
     }
 
-    // 2. Synchronize with Supabase if credentials are provided
-    if (isSupabaseConfigured) {
-      SupabaseService.fetchUserProfile(user.id)
-        .then((cloudUser) => {
-          if (cloudUser) {
-            setUser(cloudUser);
-            StorageService.saveUser(cloudUser);
-          } else {
-            SupabaseService.syncUserProfile(user).catch(() => {});
-          }
-        })
-        .catch(() => {});
-
-      SupabaseService.fetchRecentRounds(30)
-        .then((cloudRounds) => {
-          if (cloudRounds && cloudRounds.length > 0) {
-            setRoundsHistory(cloudRounds);
-            StorageService.saveRoundsHistory(cloudRounds);
-          }
-        })
-        .catch(() => {});
-    }
   }, []);
 
   // Generate realistic crowd of 42-65 virtual players for each round

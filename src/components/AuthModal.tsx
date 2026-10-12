@@ -22,7 +22,6 @@ import { User as UserType } from '../types';
 import { soundManager } from '../services/sound';
 import { AuthApi } from '../services/authApi';
 import { StorageService } from '../services/storage';
-import { isSupabaseConfigured } from '../services/supabase';
 import { COUNTRIES } from '../data/countries';
 import { PaymentLogo } from './PaymentLogos';
 import { TransactionReceiptModal } from './TransactionReceiptModal';
@@ -697,7 +696,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <span className="font-semibold text-slate-300">Persistance des Données</span>
               </div>
               <span className="text-[10px] text-slate-400">
-                {isSupabaseConfigured ? '🟢 Supabase Cloud + Local' : '🟡 Base de Données Express'}
+                🟢 PostgreSQL + stockage local
               </span>
             </div>
           </div>

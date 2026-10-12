@@ -1,5 +1,6 @@
 import dns from 'node:dns/promises';
 import { createHmac, randomUUID } from 'node:crypto';
+import nodemailer from 'nodemailer';
 import { isDatabaseConfigured, PostgresDatabase } from './database.js';
 
 // In-memory OTP storage with TTL (10 minutes)
@@ -113,205 +114,53 @@ function getEmailErrorDetails(error: unknown): { errorName: string; errorMessage
   };
 }
 
-async function sendWithBrevo(payload: TransactionalEmailPayload, diagnosticId: string): Promise<EmailSendResult> {
-  const brevoApiKey = (process.env.BREVO_API_KEY || '').trim();
-  const brevoSenderEmail = (process.env.BREVO_FROM_EMAIL || '').trim();
-  const brevoSenderName = (process.env.BREVO_FROM_NAME || 'AeroCrash').trim();
+async function sendWithSelzy(payload: TransactionalEmailPayload, diagnosticId: string): Promise<EmailSendResult> {
+  const host = (process.env.SELZY_SMTP_HOST || '').trim();
+  const port = Number(process.env.SELZY_SMTP_PORT || '587');
+  const user = (process.env.SELZY_SMTP_USER || '').trim();
+  const pass = (process.env.SELZY_SMTP_PASSWORD || '').trim();
+  const senderEmail = (process.env.SELZY_FROM_EMAIL || '').trim();
+  const senderName = (process.env.SELZY_FROM_NAME || 'AeroCrash').trim();
 
-  if (!brevoApiKey || !brevoSenderEmail) {
-    return { success: false, error: 'BREVO_API_KEY and BREVO_FROM_EMAIL must both be configured.' };
-  }
-
-  try {
-    const res = await fetch('https://api.brevo.com/v3/smtp/email', {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'api-key': brevoApiKey,
-      },
-      body: JSON.stringify({
-        sender: { name: brevoSenderName, email: brevoSenderEmail },
-        to: [{ email: payload.toEmail.trim(), ...(payload.toName ? { name: payload.toName } : {}) }],
-        subject: payload.subject,
-        htmlContent: payload.htmlContent,
-      }),
-    });
-
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const error = data?.message || `Brevo HTTP error ${res.status}`;
-      console.error(JSON.stringify({
-        event: 'email.provider_failed',
-        diagnosticId,
-        provider: 'Brevo',
-        httpStatus: res.status,
-        errorCode: typeof data?.code === 'string' ? data.code : undefined,
-        errorMessage: redactEmailAddresses(error),
-      }));
-      return { success: false, error };
-    }
-    return { success: true, messageId: data.messageId };
-  } catch (err: any) {
-    console.error(JSON.stringify({
-      event: 'email.provider_failed',
-      diagnosticId,
-      provider: 'Brevo',
-      ...getEmailErrorDetails(err),
-    }));
-    return { success: false, error: err?.message || 'Erreur réseau Brevo' };
-  }
-}
-
-async function sendWithResend(payload: TransactionalEmailPayload, diagnosticId: string): Promise<EmailSendResult> {
-  const apiKey = (process.env.RESEND_API_KEY || '').trim();
-  const senderEmail = (process.env.RESEND_FROM_EMAIL || '').trim();
-  const senderName = (process.env.RESEND_FROM_NAME || 'AeroCrash').trim();
-
-  if (!apiKey || !senderEmail) {
-    return { success: false, error: 'RESEND_API_KEY and RESEND_FROM_EMAIL must both be configured.' };
-  }
-
-  try {
-    const res = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        from: `${senderName} <${senderEmail}>`,
-        to: [payload.toEmail.trim()],
-        subject: payload.subject,
-        html: payload.htmlContent,
-      }),
-    });
-
-    const data = await res.json().catch(() => ({}));
-
-    if (!res.ok) {
-      const errMsg = data?.message || `Resend HTTP error ${res.status}`;
-      console.error(JSON.stringify({
-        event: 'email.provider_failed',
-        diagnosticId,
-        provider: 'Resend',
-        httpStatus: res.status,
-        errorCode: typeof data?.name === 'string' ? data.name : undefined,
-        errorMessage: redactEmailAddresses(errMsg),
-      }));
-      return { success: false, error: errMsg };
-    }
-
-    return {
-      success: true,
-      messageId: data.id,
-    };
-  } catch (err: any) {
-    console.error(JSON.stringify({
-      event: 'email.provider_failed',
-      diagnosticId,
-      provider: 'Resend',
-      ...getEmailErrorDetails(err),
-    }));
-    return { success: false, error: err?.message || 'Erreur réseau Resend' };
-  }
-}
-
-async function sendWithGmail(payload: TransactionalEmailPayload, diagnosticId: string): Promise<EmailSendResult> {
-  const gmailUser = (process.env.GMAIL_USER || '').trim();
-  const clientId = (process.env.GMAIL_OAUTH_CLIENT_ID || '').trim();
-  const clientSecret = (process.env.GMAIL_OAUTH_CLIENT_SECRET || '').trim();
-  const refreshToken = (process.env.GMAIL_OAUTH_REFRESH_TOKEN || '').trim();
-  const gmailFromName = (process.env.GMAIL_FROM_NAME || 'AeroCrash').trim();
-
-  if (!gmailUser || !clientId || !clientSecret || !refreshToken) {
+  if (!host || !user || !pass || !senderEmail || !Number.isInteger(port) || port < 1 || port > 65535) {
     return {
       success: false,
-      error: 'GMAIL_USER, GMAIL_OAUTH_CLIENT_ID, GMAIL_OAUTH_CLIENT_SECRET and GMAIL_OAUTH_REFRESH_TOKEN must all be configured.',
+      error: 'Configure valid SELZY_SMTP_HOST, SELZY_SMTP_PORT, SELZY_SMTP_USER, SELZY_SMTP_PASSWORD and SELZY_FROM_EMAIL values.',
     };
   }
 
-  try {
-    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: clientId,
-        client_secret: clientSecret,
-        refresh_token: refreshToken,
-        grant_type: 'refresh_token',
-      }),
-      signal: AbortSignal.timeout(15_000),
-    });
-    const tokenData = await tokenResponse.json().catch(() => ({})) as {
-      access_token?: string;
-      error?: string;
-      error_description?: string;
-    };
-    if (!tokenResponse.ok || !tokenData.access_token) {
-      const error = tokenData.error_description || tokenData.error || `Google OAuth HTTP ${tokenResponse.status}`;
-      console.error(JSON.stringify({
-        event: 'email.provider_failed',
-        diagnosticId,
-        provider: 'Gmail API',
-        httpStatus: tokenResponse.status,
-        errorCode: tokenData.error,
-        errorMessage: redactEmailAddresses(error),
-      }));
-      return { success: false, error };
-    }
+  const secure = port === 465;
+  const transporter = nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    requireTLS: !secure,
+    auth: { user, pass },
+    connectionTimeout: 15_000,
+    greetingTimeout: 15_000,
+    socketTimeout: 20_000,
+  });
 
-    const encodeHeader = (value: string) =>
-      `=?UTF-8?B?${Buffer.from(value.replace(/[\r\n]+/g, ' ').trim()).toString('base64')}?=`;
-    const formatAddress = (email: string, name?: string) =>
-      name ? `${encodeHeader(name)} <${email.replace(/[\r\n<>]/g, '')}>` : email.replace(/[\r\n<>]/g, '');
-    const encodedHtml = Buffer.from(payload.htmlContent, 'utf8').toString('base64').match(/.{1,76}/g)?.join('\r\n') || '';
-    const mimeMessage = [
-      `From: ${formatAddress(gmailUser, gmailFromName)}`,
-      `To: ${formatAddress(payload.toEmail.trim(), payload.toName)}`,
-      `Subject: ${encodeHeader(payload.subject)}`,
-      'MIME-Version: 1.0',
-      'Content-Type: text/html; charset=UTF-8',
-      'Content-Transfer-Encoding: base64',
-      '',
-      encodedHtml,
-    ].join('\r\n');
-    const raw = Buffer.from(mimeMessage, 'utf8').toString('base64url');
-    const sendResponse = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${tokenData.access_token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ raw }),
-      signal: AbortSignal.timeout(20_000),
+  try {
+    const result = await transporter.sendMail({
+      from: { name: senderName, address: senderEmail },
+      to: payload.toName
+        ? { name: payload.toName, address: payload.toEmail.trim() }
+        : payload.toEmail.trim(),
+      subject: payload.subject,
+      html: payload.htmlContent,
     });
-    const sendData = await sendResponse.json().catch(() => ({})) as {
-      id?: string;
-      error?: { code?: number; message?: string; status?: string };
-    };
-    if (!sendResponse.ok || !sendData.id) {
-      const error = sendData.error?.message || `Gmail API HTTP ${sendResponse.status}`;
-      console.error(JSON.stringify({
-        event: 'email.provider_failed',
-        diagnosticId,
-        provider: 'Gmail API',
-        httpStatus: sendResponse.status,
-        errorCode: sendData.error?.status,
-        errorMessage: redactEmailAddresses(error),
-      }));
-      return { success: false, error };
-    }
-    return { success: true, messageId: sendData.id };
+    return { success: true, messageId: result.messageId };
   } catch (err: any) {
     console.error(JSON.stringify({
       event: 'email.provider_failed',
       diagnosticId,
-      provider: 'Gmail API',
+      provider: 'Selzy SMTP',
       ...getEmailErrorDetails(err),
     }));
-    return { success: false, error: err?.message || 'Erreur API Gmail' };
+    return { success: false, error: err?.message || 'Erreur SMTP Selzy' };
+  } finally {
+    transporter.close();
   }
 }
 
@@ -319,47 +168,47 @@ export async function sendTransactionalEmail(
   payload: TransactionalEmailPayload,
 ): Promise<EmailSendResult> {
   const diagnosticId = randomUUID();
-  const gmailConfigured = Boolean(
-    process.env.GMAIL_USER?.trim()
-      && process.env.GMAIL_OAUTH_CLIENT_ID?.trim()
-      && process.env.GMAIL_OAUTH_CLIENT_SECRET?.trim()
-      && process.env.GMAIL_OAUTH_REFRESH_TOKEN?.trim(),
+  const selzyConfigured = Boolean(
+    process.env.SELZY_SMTP_HOST?.trim()
+      && process.env.SELZY_SMTP_USER?.trim()
+      && process.env.SELZY_SMTP_PASSWORD?.trim()
+      && process.env.SELZY_FROM_EMAIL?.trim(),
   );
 
-  if (!gmailConfigured && process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+  if (!selzyConfigured && process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
     console.log(`[Email Simulation] To: ${payload.toEmail} | Subject: "${payload.subject}"`);
     return { success: true, messageId: 'simulated_' + Date.now(), diagnosticId };
   }
 
-  if (!gmailConfigured) {
+  if (!selzyConfigured) {
     console.error(JSON.stringify({
       event: 'email.no_provider_configured',
       diagnosticId,
-      provider: 'gmail',
-      usernameConfigured: Boolean(process.env.GMAIL_USER?.trim()),
-      oauthClientConfigured: Boolean(process.env.GMAIL_OAUTH_CLIENT_ID?.trim()),
-      oauthSecretConfigured: Boolean(process.env.GMAIL_OAUTH_CLIENT_SECRET?.trim()),
-      refreshTokenConfigured: Boolean(process.env.GMAIL_OAUTH_REFRESH_TOKEN?.trim()),
+      provider: 'selzy_smtp',
+      hostConfigured: Boolean(process.env.SELZY_SMTP_HOST?.trim()),
+      usernameConfigured: Boolean(process.env.SELZY_SMTP_USER?.trim()),
+      passwordConfigured: Boolean(process.env.SELZY_SMTP_PASSWORD?.trim()),
+      senderConfigured: Boolean(process.env.SELZY_FROM_EMAIL?.trim()),
     }));
     return {
       success: false,
-      error: 'Configure Gmail API OAuth credentials to send email.',
+      error: 'Configure the Selzy SMTP credentials to send email.',
       diagnosticId,
     };
   }
 
-  console.info(JSON.stringify({ event: 'email.provider_attempt', diagnosticId, provider: 'gmail_api' }));
-  const result = await sendWithGmail(payload, diagnosticId);
+  console.info(JSON.stringify({ event: 'email.provider_attempt', diagnosticId, provider: 'selzy_smtp' }));
+  const result = await sendWithSelzy(payload, diagnosticId);
   if (result.success) {
-    console.info(JSON.stringify({ event: 'email.delivered', diagnosticId, provider: 'gmail_api' }));
+    console.info(JSON.stringify({ event: 'email.delivered', diagnosticId, provider: 'selzy_smtp' }));
     return { ...result, diagnosticId };
   }
 
-  const error = result.error || 'Gmail API email delivery failed.';
+  const error = result.error || 'Selzy SMTP email delivery failed.';
   console.error(JSON.stringify({
     event: 'email.delivery_failed',
     diagnosticId,
-    provider: 'gmail_api',
+    provider: 'selzy_smtp',
     error: redactEmailAddresses(error),
   }));
   return { success: false, error, diagnosticId };

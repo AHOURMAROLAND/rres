@@ -4,7 +4,6 @@
  */
 
 import { User, PaymentTransaction, RoundHistoryItem, PlayerStats, LeaderboardUser } from '../types';
-import { SupabaseService, isSupabaseConfigured } from './supabase';
 import { AuthApi } from './authApi';
 
 // Storage keys with user isolation support
@@ -225,11 +224,6 @@ export class StorageService {
 
       // Sync into permanent vault
       this.syncToVault(user, rawPassword, serverBets, serverTransactions);
-
-      // Sync to Supabase if configured
-      if (isSupabaseConfigured) {
-        SupabaseService.syncUserProfile(user).catch(() => {});
-      }
     } catch {
       // ignore
     }
@@ -250,9 +244,6 @@ export class StorageService {
       localStorage.setItem(STORAGE_KEYS.ACTIVE_USER, JSON.stringify(user));
       localStorage.setItem(STORAGE_KEYS.ACTIVE_USER_ID, user.id);
       this.syncToVault(user, rawPassword);
-      if (isSupabaseConfigured) {
-        SupabaseService.syncUserProfile(user).catch(() => {});
-      }
     } catch {
       // ignore
     }
@@ -263,9 +254,6 @@ export class StorageService {
     const user = this.getUser();
     user.balance = Math.max(0, Math.round((user.balance + amountDelta) * 100) / 100);
     this.saveUser(user);
-    if (isSupabaseConfigured) {
-      SupabaseService.updateBalance(user.id, user.balance).catch(() => {});
-    }
     if (AuthApi.isLoggedIn()) {
       AuthApi.updateBalance(user.balance, amountDelta).catch(() => {});
     }
@@ -343,9 +331,6 @@ export class StorageService {
     this.saveTransactions(list, user.id);
 
     if (syncToServer) {
-      if (isSupabaseConfigured) {
-        SupabaseService.logTransaction(tx).catch(() => {});
-      }
       if (AuthApi.isLoggedIn()) {
         AuthApi.logTransaction(tx).catch(() => {});
       }
@@ -380,9 +365,6 @@ export class StorageService {
     history.unshift(record);
     this.saveBetHistory(history.slice(0, 100), user.id);
 
-    if (isSupabaseConfigured) {
-      SupabaseService.logBet(record, user.id, gameMode).catch(() => {});
-    }
     if (AuthApi.isLoggedIn() && gameMode === 'real') {
       AuthApi.logBet(record).catch(() => {});
     }
@@ -460,10 +442,6 @@ export class StorageService {
     rounds.unshift(round);
     const updated = rounds.slice(0, 30);
     this.saveRoundsHistory(updated);
-
-    if (isSupabaseConfigured) {
-      SupabaseService.logRound(round).catch(() => {});
-    }
 
     return updated;
   }

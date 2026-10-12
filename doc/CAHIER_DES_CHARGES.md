@@ -53,7 +53,6 @@
 #### Double persistance
 - **Stockage côté serveur** : `/data/users.json` (fichier JSON) + PostgreSQL géré (base cloud).
 - **Synchronisation locale** : `localStorage` pour garantir l'absence totale de perte de solde entre les sessions.
-- **Supabase** optionnel pour synchronisation BDD cloud supplémentaire.
 
 ---
 
@@ -173,7 +172,6 @@
 | **Backend**        | Express.js (Node.js)                  | API REST serveur                              |
 | **Auth**           | JWT (jsonwebtoken) + bcryptjs         | Authentification sécurisée                    |
 | **Base de données**| PostgreSQL géré (Render en production) | Persistance cloud                             |
-| **BDD Secondaire** | Supabase (optionnel)                  | Synchronisation alternative                   |
 | **Fichier local**  | JSON (`/data/users.json`)             | Persistance locale serveur                    |
 | **Paiements**      | SasPay API                            | Mobile Money & Cartes bancaires               |
 | **Déploiement**    | Netlify (Serverless Functions)        | Hosting & API serverless                      |
@@ -189,7 +187,6 @@ aerocrah2/
 ├── server.ts                   # Serveur Express principal
 ├── netlify.toml                # Configuration déploiement Netlify
 ├── database_schema.sql         # Schéma BDD PostgreSQL
-├── supabase_schema.sql         # Schéma BDD Supabase (optionnel)
 ├── data/
 │   └── users.json              # Stockage utilisateurs local
 ├── server/
@@ -239,8 +236,7 @@ aerocrah2/
 │   │   ├── authApi.ts          # Service d'authentification API
 │   │   ├── provablyFair.ts     # Algorithme d'équité
 │   │   ├── sound.ts            # Gestionnaire audio (Web Audio API)
-│   │   ├── storage.ts          # Service de persistance locale
-│   │   └── supabase.ts         # Client Supabase
+│   │   └── storage.ts          # Service de persistance locale
 │   └── data/
 │       ├── countries.ts        # Liste des pays supportés
 │       └── virtualPlayers.ts   # Joueurs virtuels simulés
