@@ -16,6 +16,10 @@ services:
           property: connectionString
       - key: JWT_SECRET
         generateValue: true
+      - key: REGISTRATION_ENABLED
+        value: "false"
+      - key: VITE_REGISTRATION_ENABLED
+        value: "false"
       - key: APP_URL
         value: https://rres.onrender.com
       - key: SELZY_SMTP_HOST

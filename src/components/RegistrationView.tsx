@@ -11,7 +11,6 @@ import {
   Plane,
   CheckCircle2,
   AlertCircle,
-  Sparkles,
   KeyRound,
   RefreshCw,
   Send,
@@ -21,12 +20,16 @@ import { AuthApi, getApiBaseUrl } from '../services/authApi';
 import { COUNTRIES, getCountryByName } from '../data/countries';
 import { soundManager } from '../services/sound';
 
+const REGISTRATION_ENABLED = import.meta.env.VITE_REGISTRATION_ENABLED === 'true';
+
 interface RegistrationViewProps {
   onAuthSuccess: (user: User, bets?: any[], transactions?: any[]) => void;
 }
 
 export const RegistrationView: React.FC<RegistrationViewProps> = ({ onAuthSuccess }) => {
-  const [activeTab, setActiveTab] = useState<'signup' | 'login' | 'forgot_password'>('signup');
+  const [activeTab, setActiveTab] = useState<'signup' | 'login' | 'forgot_password'>(
+    REGISTRATION_ENABLED ? 'signup' : 'login',
+  );
 
   // Sign Up fields
   const [name, setName] = useState('');
@@ -390,41 +393,7 @@ export const RegistrationView: React.FC<RegistrationViewProps> = ({ onAuthSucces
         <div className="w-full max-w-md">
           {/* Card Container */}
           <div className="bg-[#0D121F]/90 backdrop-blur-xl border border-slate-800/90 rounded-3xl p-6 sm:p-8 shadow-2xl shadow-black/80 relative">
-            {/* Top Switcher: Inscription / Connexion */}
-            {activeTab !== 'forgot_password' ? (
-              <div className="flex rounded-xl bg-slate-950 p-1 mb-6 border border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => {
-                    soundManager.playClick();
-                    setActiveTab('signup');
-                    setErrorMessage(null);
-                  }}
-                  className={`flex-1 py-2.5 rounded-lg text-xs sm:text-sm font-bold transition-all cursor-pointer ${
-                    activeTab === 'signup'
-                      ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md shadow-orange-500/20'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  Inscription
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    soundManager.playClick();
-                    setActiveTab('login');
-                    setErrorMessage(null);
-                  }}
-                  className={`flex-1 py-2.5 rounded-lg text-xs sm:text-sm font-bold transition-all cursor-pointer ${
-                    activeTab === 'login'
-                      ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md shadow-orange-500/20'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  Connexion
-                </button>
-              </div>
-            ) : (
+            {activeTab === 'forgot_password' ? (
               <div className="flex items-center gap-2 mb-6 text-xs font-bold text-orange-400">
                 <button
                   type="button"
@@ -440,6 +409,51 @@ export const RegistrationView: React.FC<RegistrationViewProps> = ({ onAuthSucces
                   <span>Retour à la connexion</span>
                 </button>
               </div>
+            ) : (
+              <>
+                <div className="flex rounded-xl bg-slate-950 p-1 mb-5 border border-slate-800">
+                  {REGISTRATION_ENABLED && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        soundManager.playClick();
+                        setActiveTab('signup');
+                        setErrorMessage(null);
+                      }}
+                      className={`flex-1 py-2.5 rounded-lg text-xs sm:text-sm font-bold ${
+                        activeTab === 'signup'
+                          ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md shadow-orange-500/20'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      Inscription
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      soundManager.playClick();
+                      setActiveTab('login');
+                      setErrorMessage(null);
+                    }}
+                    className={`flex-1 py-2.5 rounded-lg text-xs sm:text-sm font-bold ${
+                      activeTab === 'login'
+                        ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-md shadow-orange-500/20'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Connexion
+                  </button>
+                </div>
+                {!REGISTRATION_ENABLED && (
+                  <div
+                    role="status"
+                    className="mb-5 p-3.5 rounded-xl bg-amber-950/50 border border-amber-700/50 text-amber-100 text-xs leading-relaxed"
+                  >
+                    Les nouvelles inscriptions sont temporairement suspendues pendant les travaux sur les paiements. La connexion et la récupération de mot de passe restent disponibles.
+                  </div>
+                )}
+              </>
             )}
 
             {/* Success Message Banner */}
@@ -459,30 +473,13 @@ export const RegistrationView: React.FC<RegistrationViewProps> = ({ onAuthSucces
                 </div>
 
                 {isNetworkError && (
-                  <div className="pt-2.5 mt-1 border-t border-red-900/60 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
+                  <div className="pt-2.5 mt-1 border-t border-red-900/60">
                     <div className="text-[11px] text-red-300">
-                      <span>Cible Netlify : </span>
+                      <span>API de connexion : </span>
                       <code className="bg-black/50 px-1.5 py-0.5 rounded text-amber-300 font-mono text-[10px]">
-                        {currentApiBase ? `${currentApiBase}/.netlify/functions/register` : '/.netlify/functions/register'}
+                        {currentApiBase ? `${currentApiBase}/api/login` : '/api/login'}
                       </code>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        soundManager.playCashout();
-                        const fallbackUser = AuthApi.createLocalSession({
-                          name: name.trim() || 'Pilote AeroCrash',
-                          email: (activeTab === 'signup' ? email : loginEmail).trim() || 'joueur@aerocrash.live',
-                          country,
-                          password: password || '123456',
-                        });
-                        onAuthSuccess(fallbackUser);
-                      }}
-                      className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-[11px] transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-md shadow-amber-500/20"
-                    >
-                      <Sparkles className="w-3.5 h-3.5" />
-                      <span>Continuer en mode local (Sans attente)</span>
-                    </button>
                   </div>
                 )}
               </div>
@@ -869,22 +866,6 @@ export const RegistrationView: React.FC<RegistrationViewProps> = ({ onAuthSucces
                   )}
                 </button>
 
-                <div className="text-center pt-2">
-                  <p className="text-xs text-slate-400">
-                    Pas encore de compte ?{' '}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        soundManager.playClick();
-                        setActiveTab('signup');
-                        setErrorMessage(null);
-                      }}
-                      className="text-orange-400 hover:text-orange-300 font-bold underline cursor-pointer"
-                    >
-                      S'inscrire maintenant
-                    </button>
-                  </p>
-                </div>
               </form>
             )}
 

@@ -32,6 +32,17 @@ exports.handler = async (event) => {
     };
   }
 
+  if (process.env.REGISTRATION_ENABLED !== 'true') {
+    return {
+      statusCode: 503,
+      headers: corsHeaders,
+      body: JSON.stringify({
+        success: false,
+        message: 'Les nouvelles inscriptions sont temporairement suspendues pendant les travaux sur les paiements.',
+      }),
+    };
+  }
+
   try {
     const data = typeof event.body === 'string' ? JSON.parse(event.body || '{}') : (event.body || {});
     const { name, email, password, country } = data;

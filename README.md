@@ -20,6 +20,8 @@ bun run lint
 bun run build
 ```
 
+Les nouvelles inscriptions avec code OTP sont temporairement suspendues pendant les travaux sur les paiements. Les comptes existants peuvent toujours se connecter et utiliser la récupération du mot de passe. Le serveur bloque aussi les appels directs aux routes d'inscription. Pour les réactiver plus tard, définis `REGISTRATION_ENABLED=true` et `VITE_REGISTRATION_ENABLED=true` dans l'environnement de déploiement, puis rebuild/redéploie.
+
 ## Déploiement sur Vercel
 
 1. Importez le dépôt dans Vercel et gardez le répertoire racine du projet.

@@ -169,6 +169,14 @@ const handleVerifyEmailDomain = async (req: Request, res: Response): Promise<voi
 // Send Registration OTP Handler
 const handleSendRegisterOtp = async (req: Request, res: Response): Promise<void> => {
   try {
+    if (process.env.REGISTRATION_ENABLED !== 'true') {
+      res.status(503).json({
+        success: false,
+        message: 'Les nouvelles inscriptions sont temporairement suspendues pendant les travaux sur les paiements.',
+      });
+      return;
+    }
+
     const { email, name } = req.body || {};
     if (!email) {
       res.status(400).json({ success: false, message: 'Adresse email requise.' });
@@ -344,6 +352,14 @@ const handleForgotPasswordReset = async (req: Request, res: Response): Promise<v
 // Register Handler (supports both /api/auth/register and /api/register)
 const handleRegister = async (req: Request, res: Response): Promise<void> => {
   try {
+    if (process.env.REGISTRATION_ENABLED !== 'true') {
+      res.status(503).json({
+        success: false,
+        message: 'Les nouvelles inscriptions sont temporairement suspendues pendant les travaux sur les paiements.',
+      });
+      return;
+    }
+
     const { name, email, country, password, otp } = req.body || {};
 
     // Validation 1: Required fields
