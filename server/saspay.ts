@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { parseMoney } from './payment-validation.js';
 
 export interface SaspayCustomer {
   first_name?: string;
@@ -8,25 +9,25 @@ export interface SaspayCustomer {
 }
 
 export interface SaspayPaymentParams {
-  amount: number;
+  amount: number | string;
   country?: string;
   method: string;
   customer: SaspayCustomer;
   description?: string;
   returnUrl?: string;
-  idempotencyKey?: string;
+  idempotencyKey: string;
   diagnosticId?: string;
   otp?: string;
 }
 
 export interface SaspayPayoutParams {
-  amount: number;
+  amount: number | string;
   country?: string;
   method: string;
   phone: string;
   customer?: SaspayCustomer;
   description?: string;
-  idempotencyKey?: string;
+  idempotencyKey: string;
 }
 
 const SASPAY_API_URL = process.env.SASPAY_API_URL || 'https://api.saspay.me/api/v1';
@@ -56,7 +57,7 @@ function getSaspayError(response: any, status: number, operation: 'payment' | 'p
   if (status === 401) {
     return {
       code,
-      message: 'SasPay refuse la clé API (401). Vérifiez dans Render que SASPAY_API_KEY est une clé active correspondant à l’environnement (sk_live_ en production ou sk_test_ en test).',
+      message: 'SasPay refuse la clé API (401). Vérifiez dans l’environnement de déploiement que SASPAY_API_KEY est une clé active correspondant à l’environnement (sk_live_ en production ou sk_test_ en test).',
     };
   }
 
@@ -280,7 +281,13 @@ export async function createSaspayPayment(params: SaspayPaymentParams): Promise<
 
   const country = isGlobal ? 'XX' : rawCountry;
   const currency = getCurrencyForCountry(country, network);
-  const formattedAmount = Number(params.amount).toFixed(2);
+  const formattedAmount = parseMoney(params.amount)?.formatted;
+  if (!formattedAmount) {
+    throw new Error('A valid amount with at most two decimal places is required for SasPay payments.');
+  }
+  if (!params.idempotencyKey) {
+    throw new Error('An Idempotency-Key is required for SasPay payments.');
+  }
 
   const cleanPhone = (params.customer.phone || '').replace(/[\s\-\(\)\.]/g, '');
   if (cleanPhone.replace(/\D/g, '').length < 6 || cleanPhone.includes('@')) {
@@ -315,7 +322,7 @@ export async function createSaspayPayment(params: SaspayPaymentParams): Promise<
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'Authorization': `Bearer ${apiKey}`,
-    'Idempotency-Key': params.idempotencyKey || crypto.randomUUID(),
+    'Idempotency-Key': params.idempotencyKey,
   };
 
   const endpoint = `${SASPAY_API_URL}/payments/softpay/`;
@@ -362,10 +369,12 @@ export async function verifySaspayPayment(paymentId: string, diagnosticId?: stri
   success: boolean;
   status: 'SUCCESS' | 'PENDING' | 'FAILED' | 'CANCELLED' | string;
   reference?: string;
-  amount?: number;
+  netAmount?: number;
+  requestedAmount?: number;
   currency?: string;
   raw?: any;
   message?: string;
+  gatewayStatus?: number;
 }> {
   const apiKey = process.env.SASPAY_API_KEY?.trim();
   if (!apiKey) {
@@ -392,17 +401,19 @@ export async function verifySaspayPayment(paymentId: string, diagnosticId?: stri
     }));
     return {
       success: false,
-      status: 'FAILED',
+      status: 'PENDING',
       message: error.message,
+      gatewayStatus: res.status,
     };
   }
 
   const result = unwrapSaspayData(data);
   return {
     success: true,
-    status: result.status || 'PENDING',
+    status: String(result.status || 'PENDING').toUpperCase(),
     reference: result.reference,
-    amount: result.net_amount ? Number(result.net_amount) : Number(result.requested_amount || 0),
+    netAmount: result.net_amount === undefined ? undefined : Number(result.net_amount),
+    requestedAmount: result.requested_amount === undefined ? undefined : Number(result.requested_amount),
     currency: result.currency,
     raw: result,
   };
@@ -426,7 +437,13 @@ export async function createSaspayPayout(params: SaspayPayoutParams): Promise<{
   const country = normalizeCountryCode(params.country);
   const currency = getCurrencyForCountry(country);
   const method = getSaspayNetwork(params.method, country);
-  const formattedAmount = Number(params.amount).toFixed(2);
+  const formattedAmount = parseMoney(params.amount)?.formatted;
+  if (!formattedAmount) {
+    throw new Error('A valid amount with at most two decimal places is required for SasPay payouts.');
+  }
+  if (!params.idempotencyKey) {
+    throw new Error('An Idempotency-Key is required for SasPay payouts.');
+  }
   const cleanPhone = (params.phone || '').replace(/[\s\-\(\)\.]/g, '');
 
   const payload = {
@@ -449,7 +466,7 @@ export async function createSaspayPayout(params: SaspayPayoutParams): Promise<{
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'Authorization': `Bearer ${apiKey}`,
-    'Idempotency-Key': params.idempotencyKey || crypto.randomUUID(),
+    'Idempotency-Key': params.idempotencyKey,
   };
 
   const res = await fetch(`${SASPAY_API_URL}/payouts/initialize/`, {
@@ -479,6 +496,40 @@ export async function createSaspayPayout(params: SaspayPayoutParams): Promise<{
     success: true,
     payoutId: result.id,
     message: result.message || data.message || 'Retrait envoyé avec succès',
+  };
+}
+
+export async function verifySaspayPayout(payoutId: string, diagnosticId?: string): Promise<{
+  success: boolean;
+  status: 'SUCCESS' | 'PENDING' | 'FAILED' | string;
+  gatewayStatus?: number;
+  message?: string;
+}> {
+  const apiKey = process.env.SASPAY_API_KEY?.trim();
+  if (!apiKey) {
+    throw new Error('SASPAY_API_KEY is not configured');
+  }
+
+  const res = await fetch(`${SASPAY_API_URL}/payouts/${encodeURIComponent(payoutId)}/verify/`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const error = getSaspayError(data, res.status, 'payout');
+    console.error(JSON.stringify({
+      event: 'saspay.payout_verification_failed',
+      diagnosticId,
+      httpStatus: res.status,
+      gatewayCode: error.code || 'unknown',
+      apiKeyMode: apiKey.startsWith('sk_live_') ? 'live' : apiKey.startsWith('sk_test_') ? 'test' : 'unknown',
+    }));
+    return { success: false, status: 'PENDING', gatewayStatus: res.status, message: error.message };
+  }
+
+  const result = unwrapSaspayData(data);
+  return {
+    success: true,
+    status: String(result.status || 'PENDING').toUpperCase(),
   };
 }
 

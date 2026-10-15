@@ -12,6 +12,8 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "db:init": "tsx server/scripts/init-db.ts",
+    "db:migrate:payment-idempotency": "tsx server/scripts/migrate-payment-idempotency.ts",
+    "test:payments": "tsx --test server/payment-validation.test.ts",
     "whitelist-ip": "tsx server/scripts/whitelist-ip.ts"
   },
   "dependencies": {

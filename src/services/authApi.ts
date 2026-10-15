@@ -427,15 +427,18 @@ export class AuthApi {
   /**
    * Deposit money via SasPay or simulated provider (Mandatory to unlock real play)
    */
-  public static async deposit(amount: number, method = 'wave', phone?: string, country?: string, otp?: string): Promise<{
+  public static async deposit(amount: number, method = 'wave', phone?: string, country?: string, otp?: string, idempotencyKey?: string): Promise<{
     success: boolean;
     pending?: boolean;
     paymentId?: string;
+    transactionId?: string;
     checkoutUrl?: string;
     instructions?: string;
+    creditedAmount?: number;
     balance?: number;
     user?: User;
     message?: string;
+    status?: string;
     transaction?: any;
   }> {
     const token = this.getToken();
@@ -446,7 +449,10 @@ export class AuthApi {
     try {
       const res = await fetch(`${baseUrl}/api/deposit`, {
         method: 'POST',
-        headers: this.getHeaders(),
+        headers: {
+          ...this.getHeaders(),
+          ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+        },
         body: JSON.stringify({ amount, method, phone, country, otp }),
       });
       const { data } = await parseResponseSafely(res);
@@ -459,45 +465,81 @@ export class AuthApi {
   /**
    * Verify SasPay payment status in real time
    */
-  public static async checkPaymentStatus(paymentId: string): Promise<{
+  public static async checkPaymentStatus(transactionId: string): Promise<{
     success: boolean;
     status: 'SUCCESS' | 'PENDING' | 'FAILED' | 'CANCELLED' | string;
+    creditedAmount?: number;
     balance?: number;
     user?: User;
+    transaction?: any;
     message?: string;
   }> {
     const baseUrl = getApiBaseUrl();
+    const identifierName = transactionId.startsWith('tx_dep_') ? 'transactionId' : 'paymentId';
 
     try {
-      const res = await fetch(`${baseUrl}/.netlify/functions/payment-status?paymentId=${encodeURIComponent(paymentId)}`, {
+      const res = await fetch(`${baseUrl}/api/payment-status?${identifierName}=${encodeURIComponent(transactionId)}`, {
         headers: this.getHeaders(),
       });
       const { data } = await parseResponseSafely(res);
-      return data || { success: false, status: 'FAILED', message: 'Erreur vérification statut.' };
+      return data || { success: false, status: 'PENDING', message: 'Erreur vérification statut.' };
     } catch {
-      return { success: false, status: 'FAILED', message: 'Erreur réseau vérification statut.' };
+      return { success: false, status: 'PENDING', message: 'Erreur réseau vérification statut.' };
     }
   }
 
   /**
    * Withdraw funds
    */
-  public static async withdraw(amount: number, method = 'wave', phone?: string, country?: string): Promise<{ success: boolean; balance?: number; user?: User; message?: string; transaction?: any }> {
+  public static async withdraw(amount: number, method = 'wave', phone?: string, country?: string, idempotencyKey?: string): Promise<{
+    success: boolean;
+    pending?: boolean;
+    retryable?: boolean;
+    status?: string;
+    transactionId?: string;
+    balance?: number;
+    user?: User;
+    message?: string;
+    transaction?: any;
+  }> {
     const token = this.getToken();
     if (!token) return { success: false, message: 'Non connecté' };
 
     const baseUrl = getApiBaseUrl();
 
     try {
-      const res = await fetch(`${baseUrl}/.netlify/functions/withdraw`, {
+      const res = await fetch(`${baseUrl}/api/withdraw`, {
         method: 'POST',
-        headers: this.getHeaders(),
+        headers: {
+          ...this.getHeaders(),
+          ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+        },
         body: JSON.stringify({ amount, method, phone, country }),
       });
       const { data } = await parseResponseSafely(res);
       return data || { success: false, message: 'Erreur lors du retrait.' };
     } catch {
       return { success: false, message: 'Erreur réseau lors du retrait.' };
+    }
+  }
+
+  public static async checkWithdrawalStatus(transactionId: string): Promise<{
+    success: boolean;
+    status: 'SUCCESS' | 'PENDING' | 'FAILED' | string;
+    retryable?: boolean;
+    balance?: number;
+    transaction?: any;
+    message?: string;
+  }> {
+    const baseUrl = getApiBaseUrl();
+    try {
+      const res = await fetch(`${baseUrl}/api/withdrawal-status/${encodeURIComponent(transactionId)}`, {
+        headers: this.getHeaders(),
+      });
+      const { data } = await parseResponseSafely(res);
+      return data || { success: false, status: 'PENDING', message: 'Erreur lors de la vérification du retrait.' };
+    } catch {
+      return { success: false, status: 'PENDING', message: 'Erreur réseau lors de la vérification du retrait.' };
     }
   }
 

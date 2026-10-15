@@ -96,6 +96,9 @@ type TransactionalEmailPayload = {
 };
 
 type EmailSendResult = { success: boolean; messageId?: string; error?: string; diagnosticId?: string };
+type GmailTransporter = ReturnType<typeof nodemailer.createTransport>;
+
+let gmailTransporter: GmailTransporter | null = null;
 
 function redactEmailAddresses(message: string): string {
   return message.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[redacted-email]');
@@ -114,27 +117,22 @@ function getEmailErrorDetails(error: unknown): { errorName: string; errorMessage
   };
 }
 
-async function sendWithSelzy(payload: TransactionalEmailPayload, diagnosticId: string): Promise<EmailSendResult> {
-  const host = (process.env.SELZY_SMTP_HOST || '').trim();
-  const port = Number(process.env.SELZY_SMTP_PORT || '587');
-  const user = (process.env.SELZY_SMTP_USER || '').trim();
-  const pass = (process.env.SELZY_SMTP_PASSWORD || '').trim();
-  const senderEmail = (process.env.SELZY_FROM_EMAIL || '').trim();
-  const senderName = (process.env.SELZY_FROM_NAME || 'AeroCrash').trim();
+async function sendWithGmail(payload: TransactionalEmailPayload, diagnosticId: string): Promise<EmailSendResult> {
+  const user = (process.env.GMAIL_USER || '').trim();
+  const pass = (process.env.GMAIL_APP_PASSWORD || '').replace(/\s/g, '');
+  const senderName = (process.env.GMAIL_FROM_NAME || 'AeroCrash').trim();
 
-  if (!host || !user || !pass || !senderEmail || !Number.isInteger(port) || port < 1 || port > 65535) {
+  if (!user || !pass) {
     return {
       success: false,
-      error: 'Configure valid SELZY_SMTP_HOST, SELZY_SMTP_PORT, SELZY_SMTP_USER, SELZY_SMTP_PASSWORD and SELZY_FROM_EMAIL values.',
+      error: 'Configure GMAIL_USER and GMAIL_APP_PASSWORD to send email through Gmail.',
     };
   }
 
-  const secure = port === 465;
-  const transporter = nodemailer.createTransport({
-    host,
-    port,
-    secure,
-    requireTLS: !secure,
+  gmailTransporter ??= nodemailer.createTransport({
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true,
     auth: { user, pass },
     connectionTimeout: 15_000,
     greetingTimeout: 15_000,
@@ -142,8 +140,8 @@ async function sendWithSelzy(payload: TransactionalEmailPayload, diagnosticId: s
   });
 
   try {
-    const result = await transporter.sendMail({
-      from: { name: senderName, address: senderEmail },
+    const result = await gmailTransporter.sendMail({
+      from: { name: senderName, address: user },
       to: payload.toName
         ? { name: payload.toName, address: payload.toEmail.trim() }
         : payload.toEmail.trim(),
@@ -155,12 +153,10 @@ async function sendWithSelzy(payload: TransactionalEmailPayload, diagnosticId: s
     console.error(JSON.stringify({
       event: 'email.provider_failed',
       diagnosticId,
-      provider: 'Selzy SMTP',
+      provider: 'Gmail SMTP',
       ...getEmailErrorDetails(err),
     }));
-    return { success: false, error: err?.message || 'Erreur SMTP Selzy' };
-  } finally {
-    transporter.close();
+    return { success: false, error: err?.message || 'Erreur SMTP Gmail' };
   }
 }
 
@@ -168,47 +164,43 @@ export async function sendTransactionalEmail(
   payload: TransactionalEmailPayload,
 ): Promise<EmailSendResult> {
   const diagnosticId = randomUUID();
-  const selzyConfigured = Boolean(
-    process.env.SELZY_SMTP_HOST?.trim()
-      && process.env.SELZY_SMTP_USER?.trim()
-      && process.env.SELZY_SMTP_PASSWORD?.trim()
-      && process.env.SELZY_FROM_EMAIL?.trim(),
+  const gmailConfigured = Boolean(
+    process.env.GMAIL_USER?.trim()
+      && process.env.GMAIL_APP_PASSWORD?.trim(),
   );
 
-  if (!selzyConfigured && process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+  if (!gmailConfigured && process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
     console.log(`[Email Simulation] To: ${payload.toEmail} | Subject: "${payload.subject}"`);
     return { success: true, messageId: 'simulated_' + Date.now(), diagnosticId };
   }
 
-  if (!selzyConfigured) {
+  if (!gmailConfigured) {
     console.error(JSON.stringify({
       event: 'email.no_provider_configured',
       diagnosticId,
-      provider: 'selzy_smtp',
-      hostConfigured: Boolean(process.env.SELZY_SMTP_HOST?.trim()),
-      usernameConfigured: Boolean(process.env.SELZY_SMTP_USER?.trim()),
-      passwordConfigured: Boolean(process.env.SELZY_SMTP_PASSWORD?.trim()),
-      senderConfigured: Boolean(process.env.SELZY_FROM_EMAIL?.trim()),
+      provider: 'gmail_smtp',
+      usernameConfigured: Boolean(process.env.GMAIL_USER?.trim()),
+      appPasswordConfigured: Boolean(process.env.GMAIL_APP_PASSWORD?.trim()),
     }));
     return {
       success: false,
-      error: 'Configure the Selzy SMTP credentials to send email.',
+      error: 'Configure GMAIL_USER and GMAIL_APP_PASSWORD to send email through Gmail.',
       diagnosticId,
     };
   }
 
-  console.info(JSON.stringify({ event: 'email.provider_attempt', diagnosticId, provider: 'selzy_smtp' }));
-  const result = await sendWithSelzy(payload, diagnosticId);
+  console.info(JSON.stringify({ event: 'email.provider_attempt', diagnosticId, provider: 'gmail_smtp' }));
+  const result = await sendWithGmail(payload, diagnosticId);
   if (result.success) {
-    console.info(JSON.stringify({ event: 'email.delivered', diagnosticId, provider: 'selzy_smtp' }));
+    console.info(JSON.stringify({ event: 'email.delivered', diagnosticId, provider: 'gmail_smtp' }));
     return { ...result, diagnosticId };
   }
 
-  const error = result.error || 'Selzy SMTP email delivery failed.';
+  const error = result.error || 'Gmail SMTP email delivery failed.';
   console.error(JSON.stringify({
     event: 'email.delivery_failed',
     diagnosticId,
-    provider: 'selzy_smtp',
+    provider: 'gmail_smtp',
     error: redactEmailAddresses(error),
   }));
   return { success: false, error, diagnosticId };

@@ -5,13 +5,11 @@ import {
   ArrowUpCircle,
   CheckCircle2,
   Smartphone,
-  CreditCard,
   Loader2,
   AlertCircle,
   ExternalLink,
   RefreshCw,
   Globe,
-  KeyRound,
   FileText,
 } from 'lucide-react';
 import { PaymentMethod, User } from '../types';
@@ -31,11 +29,23 @@ interface DepositWithdrawModalProps {
 
 interface PendingPaymentState {
   paymentId: string;
+  transactionId: string;
   checkoutUrl?: string;
   instructions?: string;
   amount: number;
   method: PaymentMethod;
   phone: string;
+}
+
+interface PendingWithdrawalState {
+  transactionId: string;
+  idempotencyKey: string;
+  idempotencyStorageKey: string;
+  amount: number;
+  method: PaymentMethod;
+  phone: string;
+  country: string;
+  retryable: boolean;
 }
 
 interface MethodOption {
@@ -45,8 +55,97 @@ interface MethodOption {
   badge?: string;
 }
 
-const PRESET_AMOUNTS_DEPOSIT = [1000, 2000, 5000, 10000, 25000];
 const PRESET_AMOUNTS_WITHDRAW = [2000, 5000, 10000, 25000, 50000];
+const inMemoryIdempotencyKeys = new Map<string, { key: string; signature: string; transactionId?: string }>();
+
+function requestIdempotencyKey(
+  userId: string,
+  kind: string,
+  fields: string[],
+): { storageKey: string; key: string; blocked: boolean } {
+  const storageKey = `aerocrash-idempotency:${userId}:${kind}`;
+  const signature = JSON.stringify(fields);
+  const inMemory = inMemoryIdempotencyKeys.get(storageKey);
+  if (inMemory) {
+    return {
+      storageKey,
+      key: inMemory.key,
+      blocked: inMemory.signature !== signature,
+    };
+  }
+  try {
+    const stored = localStorage.getItem(storageKey);
+    if (stored) {
+      const previous = JSON.parse(stored) as { key?: string; signature?: string; transactionId?: string };
+      if (previous.key && previous.signature === signature) {
+        inMemoryIdempotencyKeys.set(storageKey, {
+          key: previous.key,
+          signature,
+          transactionId: previous.transactionId,
+        });
+        return { storageKey, key: previous.key, blocked: false };
+      }
+      if (previous.key) {
+        inMemoryIdempotencyKeys.set(storageKey, {
+          key: previous.key,
+          signature: previous.signature || '',
+          transactionId: previous.transactionId,
+        });
+        return { storageKey, key: previous.key, blocked: true };
+      }
+    }
+  } catch {
+    // The generated key still protects retries within this request attempt.
+  }
+  const key = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+  inMemoryIdempotencyKeys.set(storageKey, { key, signature });
+  try {
+    localStorage.setItem(storageKey, JSON.stringify({ key, signature }));
+  } catch {
+    // The API will still receive the key generated for this attempt.
+  }
+  return { storageKey, key, blocked: false };
+}
+
+function clearIdempotencyKey(storageKey: string): void {
+  inMemoryIdempotencyKeys.delete(storageKey);
+  try {
+    localStorage.removeItem(storageKey);
+  } catch {
+    // Local storage may be disabled; the server remains authoritative.
+  }
+}
+
+function associateIdempotencyKeyWithTransaction(storageKey: string, key: string, transactionId: string): void {
+  const current = inMemoryIdempotencyKeys.get(storageKey);
+  if (!current || current.key !== key) return;
+  const updated = { ...current, transactionId };
+  inMemoryIdempotencyKeys.set(storageKey, updated);
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(updated));
+  } catch {
+    // The in-memory association remains available for this page session.
+  }
+}
+
+export function clearWithdrawalIdempotencyKey(userId: string, transactionId: string): void {
+  const storageKey = `aerocrash-idempotency:${userId}:withdraw`;
+  const inMemory = inMemoryIdempotencyKeys.get(storageKey);
+  if (inMemory?.transactionId === transactionId) {
+    clearIdempotencyKey(storageKey);
+    return;
+  }
+  try {
+    const stored = localStorage.getItem(storageKey);
+    if (!stored) return;
+    const previous = JSON.parse(stored) as { transactionId?: string };
+    if (previous.transactionId === transactionId) clearIdempotencyKey(storageKey);
+  } catch {
+    // Keep an unrecognized pending request rather than clearing the wrong idempotency key.
+  }
+}
 
 function getPaymentMethodsForCountry(countryCode: string): MethodOption[] {
   const code = (countryCode || 'CI').toUpperCase().trim();
@@ -129,7 +228,7 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
   onDepositSuccess,
   onWithdrawSuccess,
 }) => {
-  const [tab, setTab] = useState<'deposit' | 'withdraw'>('deposit');
+  const [tab, setTab] = useState<'deposit' | 'withdraw'>('withdraw');
   const [country, setCountry] = useState<string>(() => {
     const found = COUNTRIES.find((c) => c.name.toLowerCase() === (user.country || '').toLowerCase());
     return found ? found.code : 'CI';
@@ -143,6 +242,7 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [pendingPayment, setPendingPayment] = useState<PendingPaymentState | null>(null);
+  const [pendingWithdrawal, setPendingWithdrawal] = useState<PendingWithdrawalState | null>(null);
   const [completedTx, setCompletedTx] = useState<any>(null);
   const [isReceiptOpen, setIsReceiptOpen] = useState(false);
 
@@ -167,8 +267,7 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
   };
 
   const handleClose = () => {
-    stopPolling();
-    setPendingPayment(null);
+    if (!pendingWithdrawal && !pendingPayment) stopPolling();
     setErrorMessage(null);
     setSuccessMessage(null);
     setOtp('');
@@ -179,17 +278,21 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
 
   const handleCountryChange = (newCountry: string) => {
     setCountry(newCountry);
-    const available = getPaymentMethodsForCountry(newCountry);
+    const available = getPaymentMethodsForCountry(newCountry).filter(
+      (option) => tab === 'deposit' || (option.id !== 'card' && option.id !== 'crypto'),
+    );
     if (!available.some((m) => m.id === method)) {
       setMethod(available[0]?.id || 'card');
     }
   };
 
   const handleTabChange = (newTab: 'deposit' | 'withdraw') => {
+    if (pendingPayment || pendingWithdrawal) return;
     soundManager.playClick();
-    stopPolling();
-    setPendingPayment(null);
     setTab(newTab);
+    if (newTab === 'withdraw' && (method === 'card' || method === 'crypto')) {
+      setMethod(getPaymentMethodsForCountry(country).find((option) => option.id !== 'card' && option.id !== 'crypto')?.id || 'wave');
+    }
     setErrorMessage(null);
     setSuccessMessage(null);
     setOtp('');
@@ -201,22 +304,25 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
   };
 
   // Start polling status for pending payments
-  const startStatusPolling = (paymentId: string, depositAmount: number, payMethod: PaymentMethod, depositPhone: string) => {
+  const startStatusPolling = (transactionId: string, depositAmount: number, payMethod: PaymentMethod, depositPhone: string) => {
     stopPolling();
 
     pollIntervalRef.current = setInterval(async () => {
       try {
-        const res = await AuthApi.checkPaymentStatus(paymentId);
+        const res = await AuthApi.checkPaymentStatus(transactionId);
         if (res.success && res.status === 'SUCCESS') {
           stopPolling();
           setPendingPayment(null);
           soundManager.playCashout();
-          onDepositSuccess(depositAmount, payMethod, depositPhone);
-          setSuccessMessage(`Dépôt de ${depositAmount.toLocaleString('fr-FR')} FCFA validé avec succès ! Jeu débloqué.`);
+          const creditedAmount = res.creditedAmount ?? depositAmount;
+          const tx = { ...res.transaction, balance: res.balance };
+          setCompletedTx(tx);
+          onDepositSuccess(creditedAmount, payMethod, depositPhone, tx);
+          setSuccessMessage(`Dépôt confirmé : ${creditedAmount.toLocaleString('fr-FR')} FCFA nets crédités.`);
           setTimeout(() => {
             handleClose();
           }, 1800);
-        } else if (res.status === 'FAILED' || res.status === 'CANCELLED') {
+        } else if (res.success && (res.status === 'FAILED' || res.status === 'CANCELLED')) {
           stopPolling();
           setPendingPayment(null);
           setErrorMessage('Le paiement n\'a pas pu être validé ou a été annulé.');
@@ -227,28 +333,65 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
     }, 3500);
   };
 
+  const startWithdrawalStatusPolling = (withdrawal: PendingWithdrawalState) => {
+    stopPolling();
+    pollIntervalRef.current = setInterval(async () => {
+      const res = await AuthApi.checkWithdrawalStatus(withdrawal.transactionId);
+      if (!res.success || (res.status !== 'SUCCESS' && res.status !== 'FAILED')) {
+        if (res.retryable) {
+          setPendingWithdrawal((current) => current
+            ? { ...current, retryable: true }
+            : current);
+        }
+        return;
+      }
+
+      stopPolling();
+      setPendingWithdrawal(null);
+      clearIdempotencyKey(withdrawal.idempotencyStorageKey);
+      const tx = {
+        ...res.transaction,
+        amount: withdrawal.amount,
+        method: withdrawal.method,
+        phone: withdrawal.phone,
+        phoneNumber: withdrawal.phone,
+        type: 'withdraw',
+        status: res.status.toLowerCase(),
+        balance: res.balance,
+      };
+      onWithdrawSuccess(withdrawal.amount, withdrawal.method, withdrawal.phone, tx);
+      if (res.status === 'SUCCESS') {
+        soundManager.playCashout();
+        setCompletedTx(tx);
+        setSuccessMessage(`Retrait de ${withdrawal.amount.toLocaleString('fr-FR')} FCFA confirmé par SasPay.`);
+      } else {
+        setErrorMessage('Le retrait a échoué. Les fonds réservés ont été restitués à votre solde.');
+      }
+    }, 5000);
+  };
+
   const handleManualCheckStatus = async () => {
     if (!pendingPayment) return;
     setIsCheckingStatus(true);
     try {
-      const res = await AuthApi.checkPaymentStatus(pendingPayment.paymentId);
+      const res = await AuthApi.checkPaymentStatus(pendingPayment.transactionId);
       if (res.success && res.status === 'SUCCESS') {
         stopPolling();
         setPendingPayment(null);
         soundManager.playCashout();
         const txObj = {
+          ...res.transaction,
           amount: pendingPayment.amount,
-          reference: 'DEP-' + Math.floor(100000 + Math.random() * 900000),
           method: pendingPayment.method,
           phoneNumber: pendingPayment.phone,
           type: 'deposit',
           status: 'success',
-          timestamp: Date.now(),
           balance: res.balance !== undefined ? res.balance : user.balance,
         };
+        const creditedAmount = res.creditedAmount ?? pendingPayment.amount;
         setCompletedTx(txObj);
-        onDepositSuccess(pendingPayment.amount, pendingPayment.method, pendingPayment.phone, txObj);
-        setSuccessMessage(`Dépôt de ${pendingPayment.amount.toLocaleString('fr-FR')} FCFA validé avec succès ! Jeu débloqué.`);
+        onDepositSuccess(creditedAmount, pendingPayment.method, pendingPayment.phone, txObj);
+        setSuccessMessage(`Dépôt confirmé : ${creditedAmount.toLocaleString('fr-FR')} FCFA nets crédités.`);
       } else {
         setErrorMessage(
           res.status === 'PENDING'
@@ -258,6 +401,84 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
       }
     } catch {
       setErrorMessage('Impossible de vérifier le statut pour le moment. Veuillez patienter.');
+    } finally {
+      setIsCheckingStatus(false);
+    }
+  };
+
+  const handleRetryWithdrawal = async () => {
+    if (!pendingWithdrawal) return;
+    setIsCheckingStatus(true);
+    try {
+      const res = await AuthApi.withdraw(
+        pendingWithdrawal.amount,
+        pendingWithdrawal.method,
+        pendingWithdrawal.phone,
+        pendingWithdrawal.country,
+        pendingWithdrawal.idempotencyKey,
+      );
+      if (res.transactionId) {
+        associateIdempotencyKeyWithTransaction(
+          pendingWithdrawal.idempotencyStorageKey,
+          pendingWithdrawal.idempotencyKey,
+          res.transactionId,
+        );
+      }
+      if (res.success && res.transactionId) {
+        const updated = {
+          ...pendingWithdrawal,
+          transactionId: res.transactionId,
+          retryable: Boolean(res.retryable),
+        };
+        if (!updated.retryable) clearIdempotencyKey(pendingWithdrawal.idempotencyStorageKey);
+        setPendingWithdrawal(updated);
+        startWithdrawalStatusPolling(updated);
+        setErrorMessage(null);
+        return;
+      }
+      if (res.status === 'FAILED') {
+        await handleManualCheckWithdrawal();
+        return;
+      }
+      setErrorMessage(res.message || 'État du retrait toujours incertain. Réessayez sans changer la demande.');
+    } finally {
+      setIsCheckingStatus(false);
+    }
+  };
+
+  const handleManualCheckWithdrawal = async () => {
+    if (!pendingWithdrawal) return;
+    setIsCheckingStatus(true);
+    try {
+      const res = await AuthApi.checkWithdrawalStatus(pendingWithdrawal.transactionId);
+      if (!res.success || (res.status !== 'SUCCESS' && res.status !== 'FAILED')) {
+        if (res.retryable) {
+          setPendingWithdrawal((current) => current ? { ...current, retryable: true } : current);
+        }
+        setErrorMessage(res.message || 'Le retrait est toujours en attente de confirmation.');
+        return;
+      }
+      stopPolling();
+      setPendingWithdrawal(null);
+      clearIdempotencyKey(pendingWithdrawal.idempotencyStorageKey);
+      const tx = {
+        ...res.transaction,
+        amount: pendingWithdrawal.amount,
+        method: pendingWithdrawal.method,
+        phone: pendingWithdrawal.phone,
+        phoneNumber: pendingWithdrawal.phone,
+        type: 'withdraw',
+        status: res.status.toLowerCase(),
+        balance: res.balance,
+      };
+      onWithdrawSuccess(pendingWithdrawal.amount, pendingWithdrawal.method, pendingWithdrawal.phone, tx);
+      if (res.status === 'SUCCESS') {
+        soundManager.playCashout();
+        setCompletedTx(tx);
+        setSuccessMessage(`Retrait de ${pendingWithdrawal.amount.toLocaleString('fr-FR')} FCFA confirmé par SasPay.`);
+      } else {
+        setErrorMessage('Le retrait a échoué. Les fonds réservés ont été restitués à votre solde.');
+      }
     } finally {
       setIsCheckingStatus(false);
     }
@@ -295,23 +516,37 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
     const fullPhone = phone.trim().startsWith('+') ? phone.trim() : `${selectedCountry.dialCode} ${phone.trim()}`;
     const checkoutWindow = tab === 'deposit' ? window.open('about:blank', '_blank') : null;
     if (checkoutWindow) checkoutWindow.opener = null;
+    const request = requestIdempotencyKey(
+      user.id,
+      tab,
+      [String(cleanAmount), method, country, fullPhone.replace(/[\s\-().]/g, ''), tab === 'deposit' ? otp.trim() : ''],
+    );
+    if (request.blocked) {
+      setIsProcessing(false);
+      checkoutWindow?.close();
+      setErrorMessage('Une demande précédente reste incertaine. Réessayez exactement les mêmes détails avant d’en créer une nouvelle.');
+      return;
+    }
 
     try {
       if (tab === 'deposit') {
-        const res = await AuthApi.deposit(cleanAmount, method, fullPhone, country, otp.trim() || undefined);
+        const res = await AuthApi.deposit(cleanAmount, method, fullPhone, country, otp.trim() || undefined, request.key);
 
         if (!res.success) {
           checkoutWindow?.close();
           setIsProcessing(false);
+          if (!res.pending) clearIdempotencyKey(request.storageKey);
           setErrorMessage(res.message || 'Échec du dépôt. Veuillez vérifier vos informations.');
           return;
         }
 
         // If SasPay requires pending action (checkout URL or Push USSD)
-        if (res.pending && res.paymentId) {
+        if (res.pending && res.paymentId && res.transactionId) {
           setIsProcessing(false);
+          clearIdempotencyKey(request.storageKey);
           const pendingState: PendingPaymentState = {
             paymentId: res.paymentId,
+            transactionId: res.transactionId,
             checkoutUrl: res.checkoutUrl,
             instructions: res.instructions,
             amount: cleanAmount,
@@ -330,13 +565,15 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
           }
 
           // Start polling in background
-          startStatusPolling(res.paymentId, cleanAmount, method, phone.trim());
+          startStatusPolling(res.transactionId, cleanAmount, method, phone.trim());
           return;
         }
 
         // Instant validation (simulation or instant provider)
         setIsProcessing(false);
+        clearIdempotencyKey(request.storageKey);
         soundManager.playCashout();
+        const creditedAmount = res.creditedAmount ?? cleanAmount;
         const txObj = (res as any).transaction || {
           amount: cleanAmount,
           reference: 'DEP-' + Math.floor(100000 + Math.random() * 900000),
@@ -348,33 +585,55 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
           balance: res.balance !== undefined ? res.balance : (user.balance + cleanAmount),
         };
         setCompletedTx(txObj);
-        onDepositSuccess(cleanAmount, method, phone.trim(), txObj);
-        setSuccessMessage(`Dépôt de ${cleanAmount.toLocaleString('fr-FR')} FCFA validé avec succès ! Jeu débloqué.`);
+        onDepositSuccess(creditedAmount, method, phone.trim(), { ...txObj, balance: res.balance });
+        setSuccessMessage(`Dépôt confirmé : ${creditedAmount.toLocaleString('fr-FR')} FCFA nets crédités.`);
       } else {
         checkoutWindow?.close();
-        const res = await AuthApi.withdraw(cleanAmount, method, phone.trim(), country);
+        const res = await AuthApi.withdraw(cleanAmount, method, fullPhone, country, request.key);
+        if (res.transactionId) {
+          associateIdempotencyKeyWithTransaction(request.storageKey, request.key, res.transactionId);
+        }
 
         if (!res.success) {
           setIsProcessing(false);
+          if (!res.pending) clearIdempotencyKey(request.storageKey);
+          if (res.transaction && typeof res.balance === 'number') {
+            onWithdrawSuccess(cleanAmount, method, fullPhone, {
+              ...res.transaction,
+              balance: res.balance,
+            });
+          }
           setErrorMessage(res.message || 'Échec du retrait. Veuillez vérifier vos informations.');
           return;
         }
 
         setIsProcessing(false);
-        soundManager.playCashout();
-        const txObj = (res as any).transaction || {
+        if (res.status === 'SUCCESS' && res.transactionId) {
+          clearIdempotencyKey(request.storageKey);
+          const txObj = { ...res.transaction, balance: res.balance };
+          soundManager.playCashout();
+          setCompletedTx(txObj);
+          onWithdrawSuccess(cleanAmount, method, fullPhone, txObj);
+          setSuccessMessage(res.message || `Retrait de ${cleanAmount.toLocaleString('fr-FR')} FCFA confirmé.`);
+          return;
+        }
+        if (!res.transactionId) {
+          setErrorMessage(res.message || 'Retrait accepté mais son état est incertain. Réessayez avec la même demande.');
+          return;
+        }
+        const withdrawal: PendingWithdrawalState = {
+          transactionId: res.transactionId,
+          idempotencyKey: request.key,
+          idempotencyStorageKey: request.storageKey,
           amount: cleanAmount,
-          reference: 'RET-' + Math.floor(100000 + Math.random() * 900000),
           method,
-          phoneNumber: fullPhone,
-          type: 'withdraw',
-          status: 'success',
-          timestamp: Date.now(),
-          balance: res.balance !== undefined ? res.balance : Math.max(0, user.balance - cleanAmount),
+          phone: fullPhone,
+          country,
+          retryable: Boolean(res.retryable),
         };
-        setCompletedTx(txObj);
-        onWithdrawSuccess(cleanAmount, method, fullPhone, txObj);
-        setSuccessMessage(res.message || `Retrait de ${cleanAmount.toLocaleString('fr-FR')} FCFA transféré vers votre compte ${method.toUpperCase()} !`);
+        if (!withdrawal.retryable) clearIdempotencyKey(request.storageKey);
+        setPendingWithdrawal(withdrawal);
+        startWithdrawalStatusPolling(withdrawal);
       }
     } catch (err: any) {
       checkoutWindow?.close();
@@ -383,8 +642,9 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
     }
   };
 
-  const paymentMethodsList = getPaymentMethodsForCountry(country);
-  const isOrangePrepaymentOtpRequired = (country === 'CI' || country === 'BF') && method === 'orange_money' && tab === 'deposit';
+  const paymentMethodsList = getPaymentMethodsForCountry(country).filter(
+    (option) => tab === 'deposit' || (option.id !== 'card' && option.id !== 'crypto'),
+  );
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200 overflow-y-auto">
@@ -462,7 +722,7 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
               </div>
               <div>
                 <h3 className="text-base font-display font-black text-white">
-                  {tab === 'deposit' ? 'Transaction de Dépôt Confirmée' : 'Demande de Retrait Transférée'}
+                  {tab === 'deposit' ? 'Dépôt confirmé' : 'Retrait confirmé'}
                 </h3>
                 <p className="text-xs text-slate-300 mt-1">{successMessage}</p>
               </div>
@@ -560,14 +820,69 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
 
                 <button
                   type="button"
-                  onClick={() => {
-                    stopPolling();
-                    setPendingPayment(null);
-                  }}
+                  onClick={handleClose}
                   className="text-xs text-slate-500 hover:text-slate-400 py-1 transition-colors"
                 >
-                  Annuler et choisir un autre moyen
+                  Fermer la fenêtre (paiement toujours en attente)
                 </button>
+              </div>
+            </div>
+          ) : pendingWithdrawal ? (
+            <div className="py-6 flex flex-col items-center text-center space-y-4">
+              <div className="relative">
+                <div className="w-16 h-16 rounded-full bg-orange-500/20 text-orange-400 flex items-center justify-center animate-pulse">
+                  <ArrowUpCircle className="w-8 h-8" />
+                </div>
+                <div className="absolute -bottom-1 -right-1 p-1 bg-slate-900 rounded-full">
+                  <Loader2 className="w-5 h-5 text-orange-400 animate-spin" />
+                </div>
+              </div>
+              <div className="space-y-1">
+                <h3 className="font-display font-black text-base text-white">Retrait en attente de SasPay</h3>
+                <p className="text-xs text-slate-300">
+                  {pendingWithdrawal.amount.toLocaleString('fr-FR')} FCFA vers {pendingWithdrawal.phone}
+                </p>
+                <p className="text-[11px] text-slate-400 max-w-xs pt-1">
+                  Les fonds sont réservés jusqu’à confirmation. Ne créez pas un nouveau retrait. La vérification continue même si vous fermez cette fenêtre.
+                </p>
+              </div>
+              <div className="w-full flex flex-col gap-2">
+                <button
+                  type="button"
+                  onClick={handleManualCheckWithdrawal}
+                  disabled={isCheckingStatus}
+                  className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs rounded-xl flex items-center justify-center gap-2 border border-slate-700 cursor-pointer transition-all"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isCheckingStatus ? 'animate-spin' : ''}`} />
+                  <span>{isCheckingStatus ? 'Vérification...' : 'Vérifier le statut'}</span>
+                </button>
+                {pendingWithdrawal.retryable && (
+                  <button
+                    type="button"
+                    onClick={handleRetryWithdrawal}
+                    disabled={isCheckingStatus}
+                    className="w-full py-2.5 px-4 bg-orange-600 hover:bg-orange-500 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-all"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isCheckingStatus ? 'animate-spin' : ''}`} />
+                    <span>Réessayer la même demande sans nouveau débit</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleClose}
+                  className="text-xs text-slate-500 hover:text-slate-400 py-1 transition-colors"
+                >
+                  Fermer la fenêtre
+                </button>
+              </div>
+            </div>
+          ) : tab === 'deposit' ? (
+            <div className="rounded-2xl border border-amber-700/50 bg-amber-950/30 p-4 text-sm text-amber-100">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="w-5 h-5 shrink-0 text-amber-400" />
+                <p>
+                  Les dépôts sont suspendus. Le jeu en argent réel restera désactivé jusqu’à ce que les manches soient réglées entièrement côté serveur.
+                </p>
               </div>
             </div>
           ) : (
@@ -624,29 +939,6 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
                 </div>
               </div>
 
-              {/* Orange Prepayment OTP field if relevant */}
-              {isOrangePrepaymentOtpRequired && (
-                <div className="p-3 rounded-xl bg-amber-950/40 border border-amber-600/40 space-y-1.5">
-                  <div className="flex items-center gap-2 text-amber-400 text-xs font-bold">
-                    <KeyRound className="w-4 h-4" />
-                    <span>Code d'autorisation Orange Money (OTP)</span>
-                  </div>
-                  <p className="text-[11px] text-slate-300 leading-tight">
-                    {country === 'CI'
-                      ? 'Composez le #144*82# sur votre téléphone pour générer un code de paiement à 4 chiffres.'
-                      : 'Composez le *144*4*6# sur votre téléphone pour générer un code temporaire.'}
-                  </p>
-                  <input
-                    type="text"
-                    maxLength={6}
-                    value={otp}
-                    onChange={(e) => setOtp(e.target.value)}
-                    placeholder="Code OTP (ex: 1234)"
-                    className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-xs font-mono-num font-bold text-white outline-none focus:border-amber-500"
-                  />
-                </div>
-              )}
-
               {/* Amount Selection */}
               <div>
                 <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1.5">
@@ -655,7 +947,7 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
                 <div className="relative">
                   <input
                     type="number"
-                    min={tab === 'deposit' ? 1000 : 2000}
+                    min={2000}
                     max={1000000}
                     step={100}
                     required
@@ -670,7 +962,7 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
 
                 {/* Quick preset buttons */}
                 <div className="grid grid-cols-5 gap-1.5 mt-2">
-                  {(tab === 'deposit' ? PRESET_AMOUNTS_DEPOSIT : PRESET_AMOUNTS_WITHDRAW).map((p) => (
+                  {PRESET_AMOUNTS_WITHDRAW.map((p) => (
                     <button
                       key={p}
                       type="button"
@@ -691,7 +983,7 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <label className="text-xs font-bold text-slate-300 uppercase tracking-wider">
-                    {method === 'card' || method === 'crypto' ? 'Numéro de téléphone de contact' : 'Numéro Mobile Money'}
+                    Numéro Mobile Money
                   </label>
                   <span className="text-[10px] text-slate-400 font-mono-num">
                     Format : {selectedCountry.dialCode} {selectedCountry.example}
@@ -711,29 +1003,13 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
                     className="w-full px-3 py-2.5 bg-transparent text-sm font-mono-num font-semibold text-white placeholder-slate-500 outline-none"
                   />
                 </div>
-                {(method === 'card' || method === 'crypto') && (
-                  <div className="mt-2 p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-xs text-slate-400 flex items-center gap-2">
-                    {method === 'card' ? (
-                      <>
-                        <CreditCard className="w-4 h-4 text-emerald-400 shrink-0" />
-                        <span>Vous serez redirigé vers la passerelle sécurisée pour régler par carte bancaire.</span>
-                      </>
-                    ) : (
-                      <span>Vous serez redirigé vers la passerelle sécurisée pour sélectionner votre crypto / stablecoin.</span>
-                    )}
-                  </div>
-                )}
               </div>
 
               {/* Submit CTA */}
               <button
                 type="submit"
                 disabled={isProcessing}
-                className={`w-full py-3 rounded-2xl font-display font-black text-base shadow-xl flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-98 ${
-                  tab === 'deposit'
-                    ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/30'
-                    : 'bg-orange-600 hover:bg-orange-500 text-white shadow-orange-600/30'
-                }`}
+                className="w-full py-3 rounded-2xl bg-orange-600 hover:bg-orange-500 text-white shadow-orange-600/30 font-display font-black text-base shadow-xl flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-98"
               >
                 {isProcessing ? (
                   <>
@@ -742,9 +1018,7 @@ export const DepositWithdrawModal: React.FC<DepositWithdrawModalProps> = ({
                   </>
                 ) : (
                   <span>
-                    {tab === 'deposit'
-                      ? `Recharger ${amount.toLocaleString('fr-FR')} FCFA`
-                      : `Retirer ${amount.toLocaleString('fr-FR')} FCFA`}
+                    {`Retirer ${amount.toLocaleString('fr-FR')} FCFA`}
                   </span>
                 )}
               </button>

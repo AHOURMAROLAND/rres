@@ -4,7 +4,7 @@ import { HistoryRibbon } from './components/HistoryRibbon';
 import { CrashCanvas } from './components/CrashCanvas';
 import { BetPanel } from './components/BetPanel';
 import { AccountActivationModal } from './components/AccountActivationModal';
-import { DepositWithdrawModal } from './components/DepositWithdrawModal';
+import { clearWithdrawalIdempotencyKey, DepositWithdrawModal } from './components/DepositWithdrawModal';
 import { ProvablyFairModal } from './components/ProvablyFairModal';
 import { ResponsibleGamingModal } from './components/ResponsibleGamingBanner';
 import { AuthModal } from './components/AuthModal';
@@ -27,7 +27,7 @@ export default function App() {
   const [user, setUser] = useState<User>(() => StorageService.getUser());
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => AuthApi.isLoggedIn());
   const [soundEnabled, setSoundEnabled] = useState<boolean>(() => soundManager.isEnabled());
-  const [gameMode, setGameMode] = useState<GameMode>('real');
+  const [gameMode, setGameMode] = useState<GameMode>('demo');
   const [demoBalance, setDemoBalance] = useState<number>(() => {
     const saved = localStorage.getItem('aerocrash_demo_balance');
     return saved ? Number(saved) : 50000;
@@ -85,12 +85,12 @@ export default function App() {
 
   // Game Mode Handlers
   const handleToggleGameMode = (mode: GameMode) => {
-    setGameMode(mode);
-    if (mode === 'demo') {
-      addToast('info', 'Mode Démo Activé', 'Testez le jeu gratuitement avec 50 000 FCFA d\'entraînement sans risque.');
-    } else {
-      addToast('info', 'Mode Réel Activé', 'Participez aux vols avec vos gains réels et retraits Mobile Money.');
+    if (mode === 'real') {
+      addToast('warning', 'Mode réel suspendu', 'Le jeu en argent réel sera réactivé après le règlement complet des manches côté serveur.');
+      return;
     }
+    setGameMode(mode);
+    addToast('info', 'Mode Démo Activé', 'Testez le jeu gratuitement avec 50 000 FCFA d\'entraînement sans risque.');
   };
 
   const handleResetDemoBalance = () => {
@@ -109,20 +109,21 @@ export default function App() {
   useEffect(() => {
     // 0. Check URL query parameters for return from SasPay checkout redirect
     const urlParams = new URLSearchParams(window.location.search);
+    const returnTransactionId = urlParams.get('transaction_id');
     const returnPaymentId = urlParams.get('payment_id');
-    if (returnPaymentId) {
-      AuthApi.checkPaymentStatus(returnPaymentId)
+    const returnId = returnTransactionId || returnPaymentId;
+    if (returnId) {
+      AuthApi.checkPaymentStatus(returnId)
         .then((res) => {
           if (res.success && res.status === 'SUCCESS') {
             soundManager.playCashout();
-            addToast('success', 'Paiement validé avec succès !', 'Votre solde a été crédité et votre compte est prêt à jouer.');
+            addToast('success', 'Paiement vérifié !', 'Le montant net confirmé par SasPay a été crédité.');
             if (res.user) {
               setUser(res.user);
               StorageService.saveUser(res.user);
             } else if (typeof res.balance === 'number') {
-              const updated = StorageService.updateBalance(0);
-              updated.balance = res.balance;
-              updated.isActivated = true;
+              const updated = StorageService.setBalance(res.balance);
+              if (res.transaction?.type === 'deposit') updated.isActivated = true;
               StorageService.saveUser(updated);
               setUser({ ...updated });
             }
@@ -165,6 +166,55 @@ export default function App() {
     }
 
   }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated || !user.id || user.id === 'usr_guest') return;
+    let active = true;
+    let checking = false;
+
+    const reconcilePendingWithdrawals = async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        const account = await AuthApi.fetchMe();
+        if (!active || !account.success) return;
+        const pending = (account.transactions || []).filter(
+          (transaction: any) => transaction.type === 'withdraw' && transaction.status === 'pending' && transaction.id,
+        );
+        for (const transaction of pending) {
+          const status = await AuthApi.checkWithdrawalStatus(transaction.id);
+          if (!active || !status.success || (status.status !== 'SUCCESS' && status.status !== 'FAILED')) continue;
+          clearWithdrawalIdempotencyKey(user.id, transaction.id);
+          if (typeof status.balance === 'number') {
+            const updatedUser = StorageService.setBalance(status.balance);
+            setUser({ ...updatedUser });
+          }
+          const savedTransactions = StorageService.getTransactions(user.id).map((saved: any) =>
+            saved.id === transaction.id
+              ? { ...saved, status: status.status.toLowerCase(), balance: status.balance }
+              : saved,
+          );
+          StorageService.saveTransactions(savedTransactions, user.id);
+          addToast(
+            status.status === 'SUCCESS' ? 'success' : 'warning',
+            status.status === 'SUCCESS' ? 'Retrait confirmé' : 'Retrait refusé',
+            status.status === 'SUCCESS'
+              ? `${Number(transaction.amount).toLocaleString('fr-FR')} FCFA versés par SasPay.`
+              : 'Le retrait a échoué ; les fonds réservés ont été restitués.',
+          );
+        }
+      } finally {
+        checking = false;
+      }
+    };
+
+    void reconcilePendingWithdrawals();
+    const interval = window.setInterval(() => void reconcilePendingWithdrawals(), 20000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [isAuthenticated, user.id]);
 
   // Generate realistic crowd of 42-65 virtual players for each round
   const generateLiveRoomBets = useCallback(() => {
@@ -573,7 +623,9 @@ export default function App() {
 
   // Deposit success
   const handleDepositSuccess = (amount: number, method: PaymentMethod = 'wave', phone?: string, serverTx?: any) => {
-    const updatedUser = StorageService.updateBalance(amount);
+    const updatedUser = typeof serverTx?.balance === 'number'
+      ? StorageService.setBalance(serverTx.balance)
+      : StorageService.updateBalance(amount);
     updatedUser.isActivated = true;
     StorageService.saveUser(updatedUser);
     setUser({ ...updatedUser });
@@ -590,12 +642,14 @@ export default function App() {
       timestamp: Date.now(),
     };
     StorageService.addTransaction(tx, !serverTx);
-    addToast('success', 'Dépôt confirmé !', `+${amount.toLocaleString('fr-FR')} FCFA crédités. Votre compte est activé et prêt à jouer !`);
+    addToast('success', 'Dépôt confirmé !', `${amount.toLocaleString('fr-FR')} FCFA nets crédités.`);
   };
 
   // Withdraw success
   const handleWithdrawSuccess = (amount: number, method: PaymentMethod = 'wave', phone?: string, serverTx?: any) => {
-    const updatedUser = StorageService.updateBalance(-amount);
+    const updatedUser = typeof serverTx?.balance === 'number'
+      ? StorageService.setBalance(serverTx.balance)
+      : StorageService.updateBalance(-amount);
     setUser({ ...updatedUser });
 
     const tx: PaymentTransaction = serverTx || {
@@ -610,7 +664,11 @@ export default function App() {
       timestamp: Date.now(),
     };
     StorageService.addTransaction(tx, !serverTx);
-    addToast('info', 'Demande de retrait initiée', `${amount.toLocaleString('fr-FR')} FCFA envoyés vers votre compte ${method.toUpperCase()}.`);
+    if (serverTx?.status === 'failed') {
+      addToast('error', 'Retrait refusé', 'Les fonds réservés ont été restitués à votre solde.');
+    } else {
+      addToast('success', 'Retrait confirmé', `${amount.toLocaleString('fr-FR')} FCFA versés sur ${method.toUpperCase()}.`);
+    }
   };
 
   // Auth Success Handler (Sign Up & Login)

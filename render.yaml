@@ -22,17 +22,11 @@ services:
         value: "false"
       - key: APP_URL
         value: https://rres.onrender.com
-      - key: SELZY_SMTP_HOST
+      - key: GMAIL_USER
         sync: false
-      - key: SELZY_SMTP_PORT
-        value: "587"
-      - key: SELZY_SMTP_USER
+      - key: GMAIL_APP_PASSWORD
         sync: false
-      - key: SELZY_SMTP_PASSWORD
-        sync: false
-      - key: SELZY_FROM_EMAIL
-        sync: false
-      - key: SELZY_FROM_NAME
+      - key: GMAIL_FROM_NAME
         value: AeroCrash
       - key: SASPAY_API_URL
         value: https://api.saspay.me/api/v1

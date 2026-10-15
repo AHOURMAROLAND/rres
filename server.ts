@@ -12,14 +12,25 @@ import {
   createSaspayPayment,
   verifySaspayPayment,
   createSaspayPayout,
+  verifySaspayPayout,
   verifySaspayWebhookSignature,
+  normalizeCountryCode,
+  getCurrencyForCountry,
 } from './server/saspay.js';
 import {
   initializeDatabaseSchema,
   isDatabaseConfigured,
   PostgresDatabase,
+  IdempotencyConflictError,
+  InsufficientFundsError,
   getDatabaseSql,
 } from './server/database.js';
+import {
+  createRequestFingerprint,
+  isValidIdempotencyKey,
+  parseMoney,
+  validateDepositSettlement,
+} from './server/payment-validation.js';
 import {
   verifyEmailAddress,
   sendTransactionalEmail,
@@ -53,10 +64,10 @@ function sendDepositInvoiceEmail(user: { email: string; name: string }, tx: any,
     subject: `🧾 Reçu officiel de dépôt (${tx.reference}) - AeroCrash`,
     htmlContent: EmailTemplates.depositInvoice({
       name: user.name || 'Joueur AeroCrash',
-      amount: Number(tx.amount || 0),
+      amount: Number(tx.credited_amount ?? tx.creditedAmount ?? tx.amount ?? 0),
       reference: tx.reference || 'DEP-000000',
       method: String(tx.method || 'wave').toUpperCase(),
-      phone: String(tx.phone || tx.phoneNumber || ''),
+      phone: String(tx.phone || tx.phoneNumber || tx.phone_number || ''),
       balance: newBalance,
       date: new Date().toLocaleString('fr-FR', { timeZone: 'Africa/Abidjan' }),
     }),
@@ -77,7 +88,7 @@ function sendWithdrawReceiptEmail(user: { email: string; name: string }, tx: any
       amount: Number(tx.amount || 0),
       reference: tx.reference || 'RET-000000',
       method: String(tx.method || 'wave').toUpperCase(),
-      phone: String(tx.phone || tx.phoneNumber || ''),
+      phone: String(tx.phone || tx.phoneNumber || tx.phone_number || ''),
       balance: newBalance,
       date: new Date().toLocaleString('fr-FR', { timeZone: 'Africa/Abidjan' }),
     }),
@@ -90,6 +101,7 @@ function sendWithdrawReceiptEmail(user: { email: string; name: string }, tx: any
 const MIN_DEPOSIT_FCFA = Number(process.env.MIN_DEPOSIT_FCFA || 1000);
 const MIN_WITHDRAW_FCFA = Number(process.env.MIN_WITHDRAW_FCFA || 2000);
 const PLATFORM_FEE_PERCENT = Number(process.env.PLATFORM_FEE_PERCENT || 0.025);
+const REAL_MONEY_GAME_ENABLED = false;
 
 // 1. Enable CORS for all origins, allowing frontend-backend communication across domains
 app.use(cors({
@@ -122,6 +134,65 @@ app.use((req, res, next) => {
 function sanitizeUser(user: DbUser) {
   const { password, ...safeUser } = user;
   return safeUser;
+}
+
+function mapDatabaseUser(user: {
+  id: string;
+  name: string;
+  email: string;
+  password_hash: string;
+  country: string;
+  balance: number;
+  is_activated: boolean;
+  created_at: string;
+  updated_at: string;
+}): DbUser {
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    password: user.password_hash,
+    country: user.country,
+    balance: Number(user.balance),
+    isActivated: user.is_activated,
+    createdAt: user.created_at,
+    updatedAt: user.updated_at,
+    bets: [],
+    transactions: [],
+  };
+}
+
+function toPublicTransaction(transaction: {
+  id: string;
+  user_id: string;
+  type: string;
+  amount: number;
+  method: string;
+  phone_number?: string;
+  reference: string;
+  status: string;
+  created_at: string;
+  credited_amount?: number | null;
+  saspay_payment_id?: string;
+  saspay_payout_id?: string;
+  checkout_url?: string;
+}) {
+  return {
+    id: transaction.id,
+    userId: transaction.user_id,
+    type: transaction.type,
+    amount: Number(transaction.amount),
+    creditedAmount: transaction.credited_amount == null ? null : Number(transaction.credited_amount),
+    method: transaction.method,
+    phone: transaction.phone_number || '',
+    phoneNumber: transaction.phone_number || '',
+    reference: transaction.reference,
+    status: transaction.status,
+    timestamp: new Date(transaction.created_at).getTime(),
+    paymentId: transaction.saspay_payment_id,
+    payoutId: transaction.saspay_payout_id,
+    checkoutUrl: transaction.checkout_url,
+  };
 }
 
 // Helper: Verify JWT token from Authorization header
@@ -685,6 +756,13 @@ const handleBalance = async (req: Request, res: Response): Promise<void> => {
     res.status(401).json({ success: false, message: 'Non autorisé.' });
     return;
   }
+  if (!REAL_MONEY_GAME_ENABLED) {
+    res.status(503).json({
+      success: false,
+      message: 'Le jeu en argent réel est suspendu jusqu’à ce que les manches soient réglées côté serveur.',
+    });
+    return;
+  }
 
   let user = UserDatabase.findById(decoded.id);
   if (!user && isDatabaseConfigured()) {
@@ -770,7 +848,42 @@ function getSaspayProxyStatus(status?: number): number {
   return status && [400, 404, 409, 410, 422, 429].includes(status) ? status : 502;
 }
 
-// Deposit Route (Mandatory deposit to unlock real game, supports SasPay and simulated fallback)
+async function initializeStoredPayout(
+  transaction: {
+    amount: number;
+    idempotency_key?: string;
+    phone_number?: string;
+    method: string;
+    metadata?: Record<string, unknown>;
+  },
+  user: { name: string; email: string; phone?: string; country: string },
+) {
+  const formattedAmount = parseMoney(transaction.amount)?.formatted;
+  if (!formattedAmount || !transaction.idempotency_key) {
+    throw new Error('Le retrait ne possède pas de montant ou de clé d’idempotence réutilisable.');
+  }
+  const names = user.name.trim().split(/\s+/);
+  const country = normalizeCountryCode(
+    typeof transaction.metadata?.country === 'string' ? transaction.metadata.country : user.country,
+  );
+  const phone = transaction.phone_number || user.phone || '';
+  return createSaspayPayout({
+    amount: formattedAmount,
+    country,
+    method: transaction.method,
+    idempotencyKey: transaction.idempotency_key,
+    phone,
+    customer: {
+      first_name: names[0] || 'Joueur',
+      last_name: names.slice(1).join(' ') || 'AeroCrash',
+      email: user.email,
+      phone,
+    },
+    description: `Retrait AeroCrash ${formattedAmount} ${getCurrencyForCountry(country)}`,
+  });
+}
+
+// Deposit Route (real-money deposits stay disabled until server-side round settlement is implemented)
 const handleDeposit = async (req: Request, res: Response): Promise<void> => {
   const decoded = authenticateToken(req);
   if (!decoded) {
@@ -778,49 +891,26 @@ const handleDeposit = async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const { amount, method = 'wave', phone, country, otp } = req.body;
-  const numAmount = Number(amount);
-  if (isNaN(numAmount) || numAmount < MIN_DEPOSIT_FCFA) {
-    res.status(400).json({ success: false, message: `Montant de dépôt invalide (minimum ${MIN_DEPOSIT_FCFA.toLocaleString('fr-FR')} FCFA).` });
+  if (!REAL_MONEY_GAME_ENABLED) {
+    res.status(503).json({
+      success: false,
+      message: 'Les dépôts sont temporairement suspendus jusqu’à la mise en place du règlement serveur des manches.',
+    });
+    return;
+  }
+  if (!isDatabaseConfigured()) {
+    res.status(503).json({ success: false, message: 'La base de données des paiements est indisponible.' });
+    return;
+  }
+  if (!isSaspayConfigured()) {
+    res.status(503).json({ success: false, message: 'La passerelle SasPay n’est pas configurée.' });
     return;
   }
 
-  let user = UserDatabase.findById(decoded.id);
-  if (isDatabaseConfigured()) {
-    try {
-      const neonUser = await PostgresDatabase.findById(decoded.id);
-      if (neonUser) {
-        user = {
-          id: neonUser.id,
-          name: neonUser.name,
-          email: neonUser.email,
-          password: neonUser.password_hash,
-          country: neonUser.country,
-          balance: Number(neonUser.balance),
-          isActivated: neonUser.is_activated,
-          createdAt: neonUser.created_at,
-          updatedAt: neonUser.updated_at,
-          bets: user?.bets || [],
-          transactions: user?.transactions || [],
-        };
-        if (!UserDatabase.findById(decoded.id)) {
-          UserDatabase.create(user);
-        }
-      }
-    } catch (err) {
-      console.error('Deposit user lookup failed:', err);
-      if (!user) {
-        res.status(503).json({
-          success: false,
-          message: 'Impossible de vérifier le compte pour le moment. Réessayez plus tard.',
-        });
-        return;
-      }
-    }
-  }
-
-  if (!user) {
-    res.status(404).json({ success: false, message: 'Utilisateur introuvable.' });
+  const { amount, method = 'wave', phone, country, otp } = req.body || {};
+  const parsedAmount = parseMoney(amount);
+  if (!parsedAmount || parsedAmount.amount < MIN_DEPOSIT_FCFA || parsedAmount.amount > 1000000) {
+    res.status(400).json({ success: false, message: `Montant de dépôt invalide (minimum ${MIN_DEPOSIT_FCFA.toLocaleString('fr-FR')} FCFA).` });
     return;
   }
 
@@ -829,116 +919,149 @@ const handleDeposit = async (req: Request, res: Response): Promise<void> => {
     res.status(400).json({ success: false, message: 'Veuillez renseigner un numéro de téléphone valide.' });
     return;
   }
-  const txId = 'tx_dep_' + Math.random().toString(36).substring(2, 9);
-  const reference = 'DEP-' + Date.now().toString().slice(-6);
 
-  // Production Payment Processing
-  if (!isSaspayConfigured()) {
-    res.status(503).json({
-      success: false,
-      message: 'La passerelle de paiement sécurisée est temporairement indisponible. Veuillez réessayer ultérieurement.',
-    });
+  const idempotencyKey = req.get('Idempotency-Key');
+  if (!isValidIdempotencyKey(idempotencyKey)) {
+    res.status(400).json({ success: false, message: 'Une clé Idempotency-Key valide est obligatoire.' });
     return;
   }
 
+  const cleanMethod = typeof method === 'string' ? method.trim().toLowerCase() : '';
+  const normalizedCountry = normalizeCountryCode(typeof country === 'string' ? country : '');
+  const paymentCountry = cleanMethod === 'card' || cleanMethod === 'crypto' ? 'XX' : normalizedCountry;
+  const currency = getCurrencyForCountry(paymentCountry, cleanMethod);
+  const cleanOtp = typeof otp === 'string' ? otp.trim() : '';
+  const fingerprint = createRequestFingerprint(JWT_SECRET, {
+    amount: parsedAmount.formatted,
+    country: normalizedCountry,
+    method: cleanMethod,
+    phone: cleanPhone.replace(/[\s\-().]/g, ''),
+    otp: cleanOtp,
+  });
   const diagnosticId = randomUUID();
+
   try {
-    const saspayResult = await createSaspayPayment({
-      amount: numAmount,
-      country: country || user.country || 'CI',
-      method,
-      idempotencyKey: randomUUID(),
-      diagnosticId,
-      customer: {
-        first_name: user.name.split(' ')[0] || 'Joueur',
-        last_name: user.name.split(' ').slice(1).join(' ') || 'AeroCrash',
-        email: user.email,
-        phone: cleanPhone,
-      },
-      description: `Dépôt AeroCrash ${numAmount.toLocaleString('fr-FR')} FCFA`,
-      returnUrl: `${process.env.APP_URL || ''}?payment=success&payment_id=`,
-      otp,
+    const dbUser = await PostgresDatabase.findById(decoded.id);
+    if (!dbUser) {
+      res.status(404).json({ success: false, message: 'Utilisateur introuvable.' });
+      return;
+    }
+
+    const intent = await PostgresDatabase.createDepositIntent({
+      id: `tx_dep_${randomUUID()}`,
+      user_id: decoded.id,
+      amount: parsedAmount.amount,
+      currency,
+      method: cleanMethod,
+      phone_number: cleanPhone,
+      reference: `DEP-${randomUUID()}`,
+      idempotency_key: idempotencyKey,
+      request_fingerprint: fingerprint,
+      country: normalizedCountry,
     });
 
-    if (!saspayResult.success || !saspayResult.paymentId) {
-      res.status(getSaspayProxyStatus(saspayResult.gatewayStatus)).json({
-        success: false,
-        message: saspayResult.message || 'Échec de l\'initialisation du paiement sécurisé.',
-        gatewayStatus: saspayResult.gatewayStatus,
-        gatewayCode: saspayResult.gatewayCode,
-        diagnosticId,
+    if (intent.transaction.status === 'success') {
+      res.json({
+        success: true,
+        pending: false,
+        status: 'SUCCESS',
+        balance: intent.balance,
+        creditedAmount: Number(intent.transaction.credited_amount || 0),
+        transaction: toPublicTransaction(intent.transaction),
+      });
+      return;
+    }
+    if (intent.transaction.status !== 'pending') {
+      res.status(409).json({ success: false, status: intent.transaction.status, message: 'Cette intention de dépôt est terminée. Créez une nouvelle demande.' });
+      return;
+    }
+
+    if (intent.transaction.saspay_payment_id) {
+      res.status(202).json({
+        success: true,
+        pending: true,
+        paymentId: intent.transaction.saspay_payment_id,
+        transactionId: intent.transaction.id,
+        checkoutUrl: intent.transaction.checkout_url,
+        transaction: toPublicTransaction(intent.transaction),
       });
       return;
     }
 
-    const tx = {
-      id: txId,
-      userId: decoded.id,
-      type: 'deposit',
-      amount: numAmount,
-      method,
-      phone: cleanPhone,
-      reference,
-      status: 'pending',
-      timestamp: Date.now(),
-      saspayPaymentId: saspayResult.paymentId,
-      checkoutUrl: saspayResult.checkoutUrl,
-    };
+    const names = dbUser.name.trim().split(/\s+/);
+    const appUrl = process.env.APP_URL?.trim().replace(/\/+$/, '');
+    const saspayResult = await createSaspayPayment({
+      amount: parsedAmount.formatted,
+      country: normalizedCountry,
+      method: cleanMethod,
+      idempotencyKey,
+      diagnosticId,
+      customer: {
+        first_name: names[0] || 'Joueur',
+        last_name: names.slice(1).join(' ') || 'AeroCrash',
+        email: dbUser.email,
+        phone: cleanPhone,
+      },
+      description: `Dépôt AeroCrash ${parsedAmount.formatted} ${currency}`,
+      returnUrl: appUrl ? `${appUrl}/?transaction_id=${encodeURIComponent(intent.transaction.id)}` : undefined,
+      otp: cleanOtp || undefined,
+    });
 
-    UserDatabase.addTransaction(decoded.id, tx);
-    if (isDatabaseConfigured()) {
-      try {
-        await PostgresDatabase.addTransaction({
-          id: tx.id,
-          user_id: decoded.id,
-          type: 'deposit',
-          amount: numAmount,
-          currency: 'XOF',
-          method,
-          phone_number: cleanPhone,
-          reference,
-          status: 'pending',
-          saspay_payment_id: saspayResult.paymentId,
-          checkout_url: saspayResult.checkoutUrl,
-        });
-      } catch (err: any) {
-        console.error(JSON.stringify({
-          event: 'saspay.payment_transaction_persistence_failed',
-          diagnosticId,
-          paymentId: saspayResult.paymentId,
-          errorName: err?.name || 'Error',
-          errorMessage: err?.message || String(err),
-          stack: err?.stack,
-        }));
+    if (!saspayResult.success) {
+      if ([400, 401, 403, 404, 410, 422].includes(saspayResult.gatewayStatus || 0)) {
+        await PostgresDatabase.markDepositFailed(intent.transaction.id);
       }
+      res.status(getSaspayProxyStatus(saspayResult.gatewayStatus)).json({
+        success: false,
+        pending: [409, 429].includes(saspayResult.gatewayStatus || 0),
+        message: saspayResult.message || 'SasPay n’a pas confirmé la création du paiement.',
+        gatewayStatus: saspayResult.gatewayStatus,
+        diagnosticId,
+      });
+      return;
+    }
+    if (!saspayResult.paymentId) {
+      console.error(JSON.stringify({ event: 'saspay.payment_id_missing', diagnosticId, transactionId: intent.transaction.id }));
+      res.status(502).json({ success: false, pending: true, transactionId: intent.transaction.id, message: 'SasPay n’a pas renvoyé de référence. Réessayez avec la même clé d’idempotence.', diagnosticId });
+      return;
     }
 
-    res.json({
+    const saved = await PostgresDatabase.saveSaspayPayment(
+      intent.transaction.id,
+      saspayResult.paymentId,
+      saspayResult.checkoutUrl,
+    );
+    if (!saved) {
+      throw new Error('Le paiement SasPay a été créé mais sa référence n’a pas pu être enregistrée.');
+    }
+
+    res.status(202).json({
       success: true,
       pending: true,
       paymentId: saspayResult.paymentId,
+      transactionId: saved.id,
       checkoutUrl: saspayResult.checkoutUrl,
       instructions: saspayResult.instructions,
-      message: saspayResult.checkoutUrl
-        ? 'Redirection vers la page de paiement sécurisée...'
-        : 'Demande envoyée sur votre téléphone. Veuillez valider avec votre code PIN secret.',
-      transaction: tx,
+      transaction: toPublicTransaction(saved),
     });
-    return;
-  } catch (err: any) {
+  } catch (error) {
+    if (error instanceof IdempotencyConflictError) {
+      res.status(409).json({ success: false, message: error.message });
+      return;
+    }
     console.error(JSON.stringify({
-      event: 'saspay.payment_initiation_exception',
+      event: 'saspay.payment_intent_failed',
       diagnosticId,
-      errorName: err?.name || 'Error',
-      errorMessage: err?.message || String(err),
-      stack: err?.stack,
+      userId: decoded.id,
+      errorName: error instanceof Error ? error.name : 'Error',
+      errorMessage: error instanceof Error ? error.message : String(error),
     }));
-    res.status(500).json({
+    res.status(503).json({
       success: false,
-      message: err?.message || 'Erreur lors de la communication avec la passerelle de paiement sécurisée.',
+      pending: true,
+      message: 'État du paiement incertain. Ne créez pas une nouvelle demande ; réessayez avec la même clé d’idempotence.',
       diagnosticId,
     });
-    return;
   }
 };
 app.post('/api/user/deposit', handleDeposit);
@@ -946,188 +1069,146 @@ app.post('/api/deposit', handleDeposit);
 app.post('/.netlify/functions/deposit', handleDeposit);
 app.post('/deposit', handleDeposit);
 
-// Check Payment Status endpoint (for frontend polling and post-redirect verification)
+async function settleVerifiedDeposit(paymentId: string, diagnosticId: string) {
+  const found = await PostgresDatabase.findTransactionBySaspayId(paymentId);
+  if (!found) return null;
+
+  const verification = await verifySaspayPayment(paymentId, diagnosticId);
+  if (!verification.success || verification.status !== 'SUCCESS') {
+    return { verification, result: null, found };
+  }
+  const matchesRequest = validateDepositSettlement({
+    requestedAmount: Number(found.transaction.amount),
+    verifiedRequestedAmount: verification.requestedAmount,
+    netAmount: verification.netAmount,
+    expectedCurrency: found.transaction.currency,
+    verifiedCurrency: verification.currency,
+  });
+  if (!matchesRequest || verification.netAmount === undefined || !verification.currency) {
+    console.error(JSON.stringify({
+      event: 'saspay.payment_settlement_mismatch',
+      diagnosticId,
+      paymentId,
+      transactionId: found.transaction.id,
+      requestedAmount: found.transaction.amount,
+      verifiedRequestedAmount: verification.requestedAmount,
+      netAmount: verification.netAmount,
+      expectedCurrency: found.transaction.currency,
+      verifiedCurrency: verification.currency,
+    }));
+    return { verification: { ...verification, success: false, status: 'PENDING', message: 'Les données vérifiées ne correspondent pas à la demande ; le crédit est suspendu.' }, result: null, found };
+  }
+
+  const result = await PostgresDatabase.settleDeposit(paymentId, verification.netAmount, verification.currency);
+  if (result?.credited) {
+    sendDepositInvoiceEmail(
+      { email: result.user.email, name: result.user.name },
+      result.transaction,
+      result.user.balance,
+    );
+  }
+  return { verification, result, found };
+}
+
+// Checks provider status only after proving the transaction belongs to the caller.
 const handlePaymentStatus = async (req: Request, res: Response): Promise<void> => {
-  const paymentId = (req.params.paymentId || (req.query.paymentId as string) || '').trim();
-  if (!paymentId) {
-    res.status(400).json({ success: false, message: 'Identifiant de paiement requis.' });
+  const decoded = authenticateToken(req);
+  if (!decoded) {
+    res.status(401).json({ success: false, message: 'Session invalide ou expirée.' });
+    return;
+  }
+  if (!isDatabaseConfigured()) {
+    res.status(503).json({ success: false, message: 'La base de données des paiements est indisponible.' });
     return;
   }
 
-  // 1. If gateway is not configured, check existing local transaction
-  if (!isSaspayConfigured()) {
-    const found = UserDatabase.findBySaspayPaymentId(paymentId);
-    if (found) {
-      res.json({
-        success: true,
-        status: found.transaction.status || 'PENDING',
-        balance: found.user.balance,
-      });
-      return;
-    }
-    res.status(404).json({ success: false, status: 'FAILED', message: 'Transaction introuvable' });
+  const transactionId = String(req.query.transactionId || '').trim();
+  const paymentId = String(req.params.paymentId || req.query.paymentId || '').trim();
+  if (!transactionId && !paymentId) {
+    res.status(400).json({ success: false, message: 'Identifiant de transaction requis.' });
     return;
   }
 
   const diagnosticId = randomUUID();
   try {
-    const verifyRes = await verifySaspayPayment(paymentId, diagnosticId);
-    let found = UserDatabase.findBySaspayPaymentId(paymentId);
-
-    if (!found && isDatabaseConfigured()) {
-      try {
-        const databaseFound = await PostgresDatabase.findTransactionBySaspayId(paymentId);
-        if (databaseFound) {
-          const transaction = databaseFound.transaction;
-          found = {
-            user: {
-              id: databaseFound.user.id,
-              name: databaseFound.user.name,
-              email: databaseFound.user.email,
-              password: '',
-              country: databaseFound.user.country,
-              balance: databaseFound.user.balance,
-              isActivated: databaseFound.user.is_activated,
-              createdAt: databaseFound.user.created_at,
-              updatedAt: databaseFound.user.updated_at,
-              bets: [],
-              transactions: [],
-            },
-            transaction: {
-              id: transaction.id,
-              userId: transaction.user_id,
-              type: transaction.type,
-              amount: transaction.amount,
-              method: transaction.method,
-              phone: transaction.phone_number || '',
-              phoneNumber: transaction.phone_number || '',
-              reference: transaction.reference,
-              status: transaction.status,
-              timestamp: new Date(transaction.created_at).getTime(),
-              saspayPaymentId: transaction.saspay_payment_id,
-              checkoutUrl: transaction.checkout_url,
-            },
-          };
-        }
-      } catch (err: any) {
-        console.error(JSON.stringify({
-          event: 'saspay.payment_transaction_lookup_failed',
-          diagnosticId,
-          paymentId,
-          errorName: err?.name || 'Error',
-          errorMessage: err?.message || String(err),
-          stack: err?.stack,
-        }));
-        res.status(503).json({
-          success: false,
-          message: 'Impossible de récupérer la transaction dans la base de données.',
-          diagnosticId,
-        });
-        return;
-      }
+    const owned = transactionId
+      ? await PostgresDatabase.findTransactionForUser(transactionId, decoded.id, 'deposit')
+      : null;
+    const found = owned || (!transactionId ? await PostgresDatabase.findTransactionBySaspayId(paymentId) : null);
+    if (!found || found.user.id !== decoded.id) {
+      res.status(404).json({ success: false, status: 'FAILED', message: 'Transaction introuvable.' });
+      return;
     }
 
-    if (verifyRes.status === 'SUCCESS' && !found) {
-      console.error(JSON.stringify({
-        event: 'saspay.payment_confirmed_transaction_missing',
-        diagnosticId,
-        databaseConfigured: isDatabaseConfigured(),
-      }));
-    }
-
-    if (verifyRes.status === 'SUCCESS' && found) {
-      if (found.transaction.status === 'pending') {
-        const addedAmount = Number(found.transaction.amount) || Number(verifyRes.amount) || 0;
-        const newBalance = Math.round(((found.user.balance || 0) + addedAmount) * 100) / 100;
-
-        UserDatabase.update(found.user.id, {
-          balance: newBalance,
-          isActivated: true,
-        });
-
-        UserDatabase.updateTransaction(found.user.id, paymentId, {
-          status: 'success',
-          completedAt: new Date().toISOString(),
-        });
-
-        if (isDatabaseConfigured()) {
-          try {
-            await PostgresDatabase.updateBalance(found.user.id, newBalance, true);
-            await PostgresDatabase.updateTransactionStatus(paymentId, 'success');
-          } catch (err: any) {
-            console.error(JSON.stringify({
-              event: 'saspay.payment_balance_persistence_failed',
-              diagnosticId,
-              paymentId,
-              userId: found.user.id,
-              errorName: err?.name || 'Error',
-              errorMessage: err?.message || String(err),
-              stack: err?.stack,
-            }));
-          }
-        }
-
-        const freshUser = UserDatabase.findById(found.user.id);
-
-        // Send transaction receipt email
-        sendDepositInvoiceEmail(found.user, found.transaction, newBalance);
-
-        res.json({
-          success: true,
-          status: 'SUCCESS',
-          balance: newBalance,
-          user: freshUser ? sanitizeUser(freshUser) : null,
-          message: 'Paiement confirmé avec succès ! Jeu débloqué.',
-        });
-        return;
-      }
-
+    const transaction = found.transaction;
+    const user = found.user;
+    if (transaction.status === 'success') {
       res.json({
         success: true,
         status: 'SUCCESS',
-        balance: found.user.balance,
+        balance: user.balance,
+        creditedAmount: Number(transaction.credited_amount || 0),
+        user: sanitizeUser(mapDatabaseUser(user)),
+        transaction: toPublicTransaction(transaction),
+      });
+      return;
+    }
+    if (transaction.status !== 'pending') {
+      res.json({ success: true, status: transaction.status.toUpperCase(), balance: user.balance });
+      return;
+    }
+    if (!transaction.saspay_payment_id) {
+      res.status(202).json({ success: true, status: 'PENDING', balance: user.balance });
+      return;
+    }
+
+    const settled = await settleVerifiedDeposit(transaction.saspay_payment_id, diagnosticId);
+    if (!settled) {
+      res.status(404).json({ success: false, message: 'Référence SasPay introuvable.' });
+      return;
+    }
+    if (!settled.verification.success) {
+      res.status(502).json({
+        success: false,
+        status: 'PENDING',
+        message: settled.verification.message || 'Vérification SasPay temporairement indisponible.',
+        diagnosticId,
+      });
+      return;
+    }
+    if (settled.verification.status === 'FAILED' || settled.verification.status === 'CANCELLED') {
+      await PostgresDatabase.markDepositFailed(transaction.saspay_payment_id);
+      res.json({ success: true, status: 'FAILED', balance: user.balance, message: 'Le paiement a échoué.' });
+      return;
+    }
+    if (!settled.result) {
+      res.status(202).json({
+        success: true,
+        status: 'PENDING',
+        balance: user.balance,
+        message: settled.verification.message || 'Paiement en attente de confirmation.',
       });
       return;
     }
 
-    if (verifyRes.success && verifyRes.status === 'FAILED' && found) {
-      UserDatabase.updateTransaction(found.user.id, paymentId, { status: 'failed' });
-      if (isDatabaseConfigured()) {
-        try {
-          await PostgresDatabase.updateTransactionStatus(paymentId, 'failed');
-        } catch (err: any) {
-          console.error(JSON.stringify({
-            event: 'saspay.payment_failure_status_persistence_failed',
-            diagnosticId,
-            paymentId,
-            userId: found.user.id,
-            errorName: err?.name || 'Error',
-            errorMessage: err?.message || String(err),
-            stack: err?.stack,
-          }));
-        }
-      }
-    }
-
-    res.status(verifyRes.success ? 200 : 502).json({
-      success: verifyRes.success,
-      status: verifyRes.status,
-      message: verifyRes.message,
-      ...(!verifyRes.success ? { diagnosticId } : {}),
+    res.json({
+      success: true,
+      status: 'SUCCESS',
+      balance: settled.result.user.balance,
+      creditedAmount: Number(settled.result.transaction.credited_amount || 0),
+      user: sanitizeUser(mapDatabaseUser(settled.result.user)),
+      transaction: toPublicTransaction(settled.result.transaction),
+      message: 'Paiement confirmé et crédité.',
     });
-  } catch (err: any) {
+  } catch (error) {
     console.error(JSON.stringify({
-      event: 'saspay.payment_verification_exception',
+      event: 'saspay.payment_status_failed',
       diagnosticId,
-      errorName: err?.name || 'Error',
-      errorMessage: err?.message || String(err),
-      stack: err?.stack,
+      userId: decoded.id,
+      errorName: error instanceof Error ? error.name : 'Error',
+      errorMessage: error instanceof Error ? error.message : String(error),
     }));
-    res.status(500).json({
-      success: false,
-      message: err?.message || 'Erreur lors de la vérification du paiement',
-      diagnosticId,
-    });
+    res.status(503).json({ success: false, status: 'PENDING', message: 'La vérification est temporairement indisponible.', diagnosticId });
   }
 };
 app.get('/api/user/payment-status/:paymentId', handlePaymentStatus);
@@ -1146,54 +1227,25 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const { amount, method = 'wave', phone, country } = req.body;
-  const numAmount = Number(amount);
-
-  let user = UserDatabase.findById(decoded.id);
-  if (isDatabaseConfigured()) {
-    try {
-      const neonUser = await PostgresDatabase.findById(decoded.id);
-      if (neonUser) {
-        if (!user) {
-          user = {
-            id: neonUser.id,
-            name: neonUser.name,
-            email: neonUser.email,
-            password: neonUser.password_hash,
-            country: neonUser.country,
-            balance: Number(neonUser.balance),
-            isActivated: neonUser.is_activated,
-            createdAt: neonUser.created_at,
-            updatedAt: neonUser.updated_at,
-            bets: [],
-            transactions: [],
-          };
-          UserDatabase.create(user);
-        } else {
-          user.balance = Number(neonUser.balance);
-        }
-      }
-    } catch (err) {}
+  if (!isDatabaseConfigured()) {
+    res.status(503).json({ success: false, message: 'La base de données des retraits est indisponible.' });
+    return;
   }
-
-  if (!user) {
-    res.status(404).json({ success: false, message: 'Utilisateur introuvable.' });
+  if (!isSaspayConfigured()) {
+    res.status(503).json({ success: false, message: 'Le service de retrait SasPay n’est pas configuré.' });
     return;
   }
 
+  const { amount, method = 'wave', phone, country } = req.body || {};
+  const parsedAmount = parseMoney(amount);
   const MAX_WITHDRAW_FCFA = 500000;
-  if (isNaN(numAmount) || numAmount < MIN_WITHDRAW_FCFA) {
+  if (!parsedAmount || parsedAmount.amount < MIN_WITHDRAW_FCFA) {
     res.status(400).json({ success: false, message: `Montant minimum de retrait : ${MIN_WITHDRAW_FCFA.toLocaleString('fr-FR')} FCFA.` });
     return;
   }
 
-  if (numAmount > MAX_WITHDRAW_FCFA) {
+  if (parsedAmount.amount > MAX_WITHDRAW_FCFA) {
     res.status(400).json({ success: false, message: `Montant maximum par retrait : ${MAX_WITHDRAW_FCFA.toLocaleString('fr-FR')} FCFA.` });
-    return;
-  }
-
-  if (numAmount > user.balance) {
-    res.status(400).json({ success: false, message: `Solde insuffisant (votre solde : ${user.balance.toLocaleString('fr-FR')} FCFA).` });
     return;
   }
 
@@ -1203,118 +1255,158 @@ const handleWithdraw = async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const txId = 'tx_wth_' + Math.random().toString(36).substring(2, 9);
-  const reference = 'RET-' + Date.now().toString().slice(-6);
-
-  if (!isSaspayConfigured()) {
-    res.status(503).json({
-      success: false,
-      message: 'Le service de retrait sécurisé est temporairement indisponible. Veuillez réessayer ultérieurement.',
-    });
+  const idempotencyKey = req.get('Idempotency-Key');
+  if (!isValidIdempotencyKey(idempotencyKey)) {
+    res.status(400).json({ success: false, message: 'Une clé Idempotency-Key valide est obligatoire.' });
     return;
   }
 
-  // Lock and deduct balance upfront
-  const previousBalance = user.balance;
-  const newBalance = Math.round((previousBalance - numAmount) * 100) / 100;
-  UserDatabase.update(decoded.id, { balance: newBalance });
-
-  if (isDatabaseConfigured()) {
-    try {
-      await PostgresDatabase.updateBalance(decoded.id, newBalance);
-    } catch (err) {}
-  }
-
+  const cleanMethod = typeof method === 'string' ? method.trim().toLowerCase() : '';
+  const normalizedCountry = normalizeCountryCode(typeof country === 'string' ? country : '');
+  const currency = getCurrencyForCountry(normalizedCountry);
+  const fingerprint = createRequestFingerprint(JWT_SECRET, {
+    amount: parsedAmount.formatted,
+    country: normalizedCountry,
+    method: cleanMethod,
+    phone: cleanPhone.replace(/[\s\-().]/g, ''),
+  });
+  const diagnosticId = randomUUID();
+  let transactionId: string | undefined;
   try {
-    const payoutRes = await createSaspayPayout({
-      amount: numAmount,
-      country: country || user.country || 'CI',
-      method,
-      idempotencyKey: randomUUID(),
-      phone: cleanPhone,
-      customer: {
-        first_name: user.name.split(' ')[0] || 'Joueur',
-        last_name: user.name.split(' ').slice(1).join(' ') || 'AeroCrash',
-        email: user.email,
-        phone: cleanPhone,
-      },
-      description: `Retrait gains AeroCrash ${numAmount.toLocaleString('fr-FR')} FCFA`,
+    const dbUser = await PostgresDatabase.findById(decoded.id);
+    if (!dbUser) {
+      res.status(404).json({ success: false, message: 'Utilisateur introuvable.' });
+      return;
+    }
+    const intent = await PostgresDatabase.createWithdrawalIntent({
+      id: `tx_wth_${randomUUID()}`,
+      user_id: decoded.id,
+      amount: parsedAmount.amount,
+      currency,
+      method: cleanMethod,
+      phone_number: cleanPhone,
+      reference: `RET-${randomUUID()}`,
+      idempotency_key: idempotencyKey,
+      request_fingerprint: fingerprint,
+      country: normalizedCountry,
     });
+    transactionId = intent.transaction.id;
 
-    if (!payoutRes.success) {
-      // Rollback balance on gateway rejection
-      UserDatabase.update(decoded.id, { balance: previousBalance });
-      if (isDatabaseConfigured()) {
-        try {
-          await PostgresDatabase.updateBalance(decoded.id, previousBalance);
-        } catch (err) {}
-      }
-      res.status(getSaspayProxyStatus(payoutRes.gatewayStatus)).json({
-        success: false,
-        message: payoutRes.message || 'Échec de l\'envoi du retrait. Vos fonds ont été recrédités sur votre solde.',
-        gatewayStatus: payoutRes.gatewayStatus,
-        gatewayCode: payoutRes.gatewayCode,
+    if (intent.transaction.status !== 'pending') {
+      res.status(intent.transaction.status === 'success' ? 200 : 409).json({
+        success: intent.transaction.status === 'success',
+        status: intent.transaction.status.toUpperCase(),
+        balance: intent.balance,
+        transactionId: intent.transaction.id,
+        transaction: toPublicTransaction(intent.transaction),
+        message: intent.transaction.status === 'failed' ? 'Ce retrait a échoué. Créez une nouvelle demande si vous souhaitez réessayer.' : undefined,
+      });
+      return;
+    }
+    if (intent.transaction.saspay_payout_id) {
+      res.status(202).json({
+        success: true,
+        pending: true,
+        status: 'PENDING',
+        balance: intent.balance,
+        transactionId: intent.transaction.id,
+        transaction: toPublicTransaction(intent.transaction),
       });
       return;
     }
 
-    const tx = {
-      id: txId,
-      userId: decoded.id,
-      type: 'withdraw',
-      amount: numAmount,
-      method,
-      phone: cleanPhone,
-      reference,
-      status: 'pending',
-      timestamp: Date.now(),
-      saspayPayoutId: payoutRes.payoutId,
-    };
-    UserDatabase.addTransaction(decoded.id, tx);
-
-    if (isDatabaseConfigured()) {
-      try {
-        await PostgresDatabase.addTransaction({
-          id: tx.id,
-          user_id: decoded.id,
-          type: 'withdraw',
-          amount: numAmount,
-          currency: 'XOF',
-          method,
-          phone_number: cleanPhone,
-          reference,
-          status: 'pending',
-          saspay_payout_id: payoutRes.payoutId,
+    const payoutRes = await initializeStoredPayout(intent.transaction, {
+      name: dbUser.name,
+      email: dbUser.email,
+      country: normalizedCountry,
+    });
+    if (!payoutRes.success) {
+      if ([400, 401, 403, 404, 410, 422].includes(payoutRes.gatewayStatus || 0)) {
+        const finalized = await PostgresDatabase.finalizeWithdrawal(intent.transaction.id, 'failed');
+        res.status(getSaspayProxyStatus(payoutRes.gatewayStatus)).json({
+          success: false,
+          pending: false,
+          status: 'FAILED',
+          balance: finalized?.user.balance ?? intent.balance,
+          transactionId: finalized?.transaction.id,
+          transaction: finalized ? toPublicTransaction(finalized.transaction) : undefined,
+          message: payoutRes.message || 'SasPay a refusé le retrait ; le solde réservé a été libéré.',
+          gatewayStatus: payoutRes.gatewayStatus,
+          diagnosticId,
         });
-      } catch (err) {}
+        return;
+      }
+      res.status(202).json({
+        success: true,
+        pending: true,
+        retryable: true,
+        status: 'PENDING',
+        balance: intent.balance,
+        transactionId: intent.transaction.id,
+        transaction: toPublicTransaction(intent.transaction),
+        message: 'Résultat du retrait incertain. Réessayez uniquement avec la même clé d’idempotence.',
+      });
+      return;
     }
 
-    // Send withdrawal receipt email
-    sendWithdrawReceiptEmail(user, tx, newBalance);
-
-    const updated = UserDatabase.findById(decoded.id);
-    res.json({
+    if (!payoutRes.payoutId) {
+      res.status(202).json({
+        success: true,
+        pending: true,
+        retryable: true,
+        status: 'PENDING',
+        balance: intent.balance,
+        transactionId: intent.transaction.id,
+        message: 'SasPay n’a pas renvoyé de référence. Réessayez uniquement avec la même clé d’idempotence.',
+      });
+      return;
+    }
+    const saved = await PostgresDatabase.saveSaspayPayout(intent.transaction.id, payoutRes.payoutId);
+    if (!saved) {
+      throw new Error('Le retrait SasPay a été créé mais sa référence n’a pas pu être enregistrée.');
+    }
+    res.status(202).json({
       success: true,
-      message: `Demande de retrait de ${numAmount.toLocaleString('fr-FR')} FCFA transférée vers votre compte Mobile Money.`,
-      balance: newBalance,
-      user: updated ? sanitizeUser(updated) : null,
-      transaction: tx,
+      pending: true,
+      status: 'PENDING',
+      balance: intent.balance,
+      transactionId: saved.id,
+      transaction: toPublicTransaction(saved),
+      message: 'Demande de retrait enregistrée ; le virement reste en attente de confirmation SasPay.',
     });
-    return;
-  } catch (err: any) {
-    console.error('SasPay payout error:', err);
-    // Rollback balance
-    UserDatabase.update(decoded.id, { balance: previousBalance });
-    if (isDatabaseConfigured()) {
-      try {
-        await PostgresDatabase.updateBalance(decoded.id, previousBalance);
-      } catch (rErr) {}
+  } catch (error) {
+    if (error instanceof IdempotencyConflictError) {
+      res.status(409).json({ success: false, message: error.message });
+      return;
     }
-    res.status(500).json({
-      success: false,
-      message: err?.message || 'Erreur lors du traitement du retrait. Solde restauré.',
+    if (error instanceof InsufficientFundsError) {
+      res.status(400).json({ success: false, message: error.message });
+      return;
+    }
+    console.error(JSON.stringify({
+      event: 'saspay.payout_intent_uncertain',
+      diagnosticId,
+      userId: decoded.id,
+      transactionId,
+      errorName: error instanceof Error ? error.name : 'Error',
+      errorMessage: error instanceof Error ? error.message : String(error),
+    }));
+    if (!transactionId) {
+      res.status(503).json({
+        success: false,
+        message: 'La demande de retrait n’a pas pu être enregistrée ; aucun transfert n’a été envoyé.',
+        diagnosticId,
+      });
+      return;
+    }
+    res.status(202).json({
+      success: true,
+      pending: true,
+      retryable: true,
+      transactionId,
+      message: 'Résultat du retrait incertain. Réessayez uniquement avec la même clé d’idempotence.',
+      diagnosticId,
     });
-    return;
   }
 };
 app.post('/api/user/withdraw', handleWithdraw);
@@ -1322,28 +1414,183 @@ app.post('/api/withdraw', handleWithdraw);
 app.post('/.netlify/functions/withdraw', handleWithdraw);
 app.post('/withdraw', handleWithdraw);
 
+const handleWithdrawalStatus = async (req: Request, res: Response): Promise<void> => {
+  const decoded = authenticateToken(req);
+  if (!decoded) {
+    res.status(401).json({ success: false, message: 'Session invalide ou expirée.' });
+    return;
+  }
+  if (!isDatabaseConfigured()) {
+    res.status(503).json({ success: false, message: 'La base de données des retraits est indisponible.' });
+    return;
+  }
+
+  const transactionId = String(req.params.transactionId || req.query.transactionId || '').trim();
+  if (!transactionId) {
+    res.status(400).json({ success: false, message: 'Identifiant de retrait requis.' });
+    return;
+  }
+
+  const diagnosticId = randomUUID();
+  try {
+    const found = await PostgresDatabase.findTransactionForUser(transactionId, decoded.id, 'withdraw');
+    if (!found) {
+      res.status(404).json({ success: false, message: 'Retrait introuvable.' });
+      return;
+    }
+    if (found.transaction.status !== 'pending') {
+      res.json({
+        success: true,
+        status: found.transaction.status.toUpperCase(),
+        balance: found.user.balance,
+        transaction: toPublicTransaction(found.transaction),
+      });
+      return;
+    }
+    if (!found.transaction.saspay_payout_id) {
+      if (!found.transaction.idempotency_key) {
+        res.json({
+          success: true,
+          status: 'PENDING',
+          balance: found.user.balance,
+          retryable: false,
+          message: 'Ce retrait historique doit être rapproché manuellement par le support.',
+        });
+        return;
+      }
+      const retry = await PostgresDatabase.claimPendingPayoutRetry(transactionId, decoded.id);
+      if (!retry) {
+        res.status(202).json({ success: true, status: 'PENDING', balance: found.user.balance, retryable: true });
+        return;
+      }
+      const retryResult = await initializeStoredPayout(retry.transaction, retry.user);
+      if (!retryResult.success) {
+        if ([400, 401, 403, 404, 410, 422].includes(retryResult.gatewayStatus || 0)) {
+          const finalized = await PostgresDatabase.finalizeWithdrawal(transactionId, 'failed');
+          res.json({
+            success: true,
+            status: 'FAILED',
+            balance: finalized?.user.balance ?? retry.user.balance,
+            transaction: finalized ? toPublicTransaction(finalized.transaction) : undefined,
+          });
+          return;
+        }
+        res.status(202).json({
+          success: true,
+          status: 'PENDING',
+          balance: retry.user.balance,
+          retryable: true,
+          message: retryResult.message || 'Résultat SasPay incertain ; une nouvelle vérification sera tentée.',
+        });
+        return;
+      }
+      if (!retryResult.payoutId) {
+        res.status(202).json({
+          success: true,
+          status: 'PENDING',
+          balance: retry.user.balance,
+          retryable: true,
+        });
+        return;
+      }
+      const saved = await PostgresDatabase.saveSaspayPayout(transactionId, retryResult.payoutId);
+      if (!saved) throw new Error('La référence du retrait n’a pas pu être enregistrée.');
+      res.status(202).json({
+        success: true,
+        status: 'PENDING',
+        balance: retry.user.balance,
+        transaction: toPublicTransaction(saved),
+        retryable: false,
+      });
+      return;
+    }
+
+    const verified = await verifySaspayPayout(found.transaction.saspay_payout_id, diagnosticId);
+    if (!verified.success) {
+      res.status(502).json({
+        success: false,
+        status: 'PENDING',
+        message: verified.message || 'Vérification SasPay temporairement indisponible.',
+        diagnosticId,
+      });
+      return;
+    }
+    if (verified.status !== 'SUCCESS' && verified.status !== 'FAILED' && verified.status !== 'CANCELLED') {
+      res.json({ success: true, status: 'PENDING', balance: found.user.balance });
+      return;
+    }
+
+    const finalized = await PostgresDatabase.finalizeWithdrawal(
+      found.transaction.id,
+      verified.status === 'SUCCESS' ? 'success' : 'failed',
+    );
+    if (!finalized) {
+      res.status(503).json({ success: false, status: 'PENDING', message: 'Impossible de régler ce retrait.' });
+      return;
+    }
+    if (finalized.changed && verified.status === 'SUCCESS') {
+      sendWithdrawReceiptEmail(
+        { email: finalized.user.email, name: finalized.user.name },
+        finalized.transaction,
+        finalized.user.balance,
+      );
+    }
+    res.json({
+      success: true,
+      status: finalized.transaction.status.toUpperCase(),
+      balance: finalized.user.balance,
+      transaction: toPublicTransaction(finalized.transaction),
+      message: verified.status !== 'SUCCESS' ? 'Le retrait a échoué ; les fonds ont été libérés.' : 'Retrait confirmé.',
+    });
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: 'saspay.payout_status_failed',
+      diagnosticId,
+      transactionId,
+      userId: decoded.id,
+      errorName: error instanceof Error ? error.name : 'Error',
+      errorMessage: error instanceof Error ? error.message : String(error),
+    }));
+    res.status(503).json({ success: false, status: 'PENDING', message: 'La vérification est temporairement indisponible.', diagnosticId });
+  }
+};
+app.get('/api/withdrawal-status/:transactionId', handleWithdrawalStatus);
+app.get('/api/withdrawal-status', handleWithdrawalStatus);
+
 // SasPay Webhook Endpoint (Strict idempotency & HMAC verification)
 const handleSaspayWebhook = async (req: Request, res: Response): Promise<void> => {
   const diagnosticId = randomUUID();
   const sig = (req.headers['x-webhook-signature'] as string) || '';
   const timestamp = (req.headers['x-webhook-timestamp'] as string) || '';
-  const rawBody = (req as any).rawBody || JSON.stringify(req.body);
+  const eventHeader = (req.headers['x-webhook-event'] as string) || '';
+  const rawBody = (req as any).rawBody;
+  const secret = process.env.SASPAY_WEBHOOK_SECRET?.trim();
 
-  if (process.env.SASPAY_WEBHOOK_SECRET) {
-    const isValid = verifySaspayWebhookSignature(rawBody, sig, timestamp);
-    if (!isValid) {
-      console.warn(JSON.stringify({
-        event: 'saspay.webhook_signature_rejected',
-        diagnosticId,
-        signaturePresent: Boolean(sig),
-        timestampPresent: Boolean(timestamp),
-      }));
-      res.status(403).json({ error: 'Signature invalide ou délai dépassé', diagnosticId });
-      return;
-    }
+  if (!secret) {
+    console.error(JSON.stringify({ event: 'saspay.webhook_secret_missing', diagnosticId }));
+    res.status(503).json({ error: 'Webhook SasPay non configuré.', diagnosticId });
+    return;
+  }
+  if (!Buffer.isBuffer(rawBody) || !eventHeader) {
+    res.status(400).json({ error: 'Corps brut ou événement webhook manquant.', diagnosticId });
+    return;
+  }
+  if (!verifySaspayWebhookSignature(rawBody, sig, timestamp, secret)) {
+    console.warn(JSON.stringify({
+      event: 'saspay.webhook_signature_rejected',
+      diagnosticId,
+      signaturePresent: Boolean(sig),
+      timestampPresent: Boolean(timestamp),
+    }));
+    res.status(403).json({ error: 'Signature invalide ou délai dépassé', diagnosticId });
+    return;
   }
 
   const { event, data } = req.body || {};
+  if (event !== eventHeader) {
+    res.status(400).json({ error: 'L’événement webhook ne correspond pas à son en-tête.', diagnosticId });
+    return;
+  }
   console.info(JSON.stringify({
     event: 'saspay.webhook_received',
     diagnosticId,
@@ -1351,119 +1598,56 @@ const handleSaspayWebhook = async (req: Request, res: Response): Promise<void> =
     paymentId: data?.id,
   }));
 
-  if (event === 'transaction.success' && data?.id) {
-    // 1. Look up transaction in local DB
-    let found = UserDatabase.findBySaspayPaymentId(data.id);
-
-    // 2. If not in local DB memory, look up in Neon
-    if (!found && isDatabaseConfigured()) {
-      try {
-        const neonFound = await PostgresDatabase.findTransactionBySaspayId(data.id);
-        if (neonFound) {
-          found = {
-            user: {
-              id: neonFound.user.id,
-              name: neonFound.user.name,
-              email: neonFound.user.email,
-              password: '',
-              country: neonFound.user.country,
-              balance: neonFound.user.balance,
-              isActivated: true,
-              createdAt: '',
-              updatedAt: '',
-              bets: [],
-              transactions: [neonFound.transaction],
-            },
-            transaction: neonFound.transaction,
-          };
-        }
-      } catch (err: any) {
-        console.error(JSON.stringify({
-          event: 'saspay.webhook_transaction_lookup_failed',
-          diagnosticId,
-          paymentId: data.id,
-          errorName: err?.name || 'Error',
-          errorMessage: err?.message || String(err),
-          stack: err?.stack,
-        }));
-      }
+  if (event === 'transaction.success' || event === 'transaction.failed' || event === 'transaction.cancelled') {
+    if (typeof data?.id !== 'string' || !data.id) {
+      res.status(400).json({ error: 'Identifiant de paiement manquant.', diagnosticId });
+      return;
     }
-
-    if (!found) {
-      console.error(JSON.stringify({
-        event: 'saspay.webhook_transaction_not_found',
-        diagnosticId,
-        paymentId: data.id,
-        databaseConfigured: isDatabaseConfigured(),
-      }));
+    if (!isDatabaseConfigured()) {
+      res.status(503).json({ error: 'Base de données des paiements indisponible.', diagnosticId });
+      return;
     }
-
-    if (found) {
-      // IDEMPOTENCY CHECK: If already credited, skip!
-      if (found.transaction.status === 'success') {
-        console.log(`[SasPay Webhook] Transaction ${data.id} already processed. Duplicate skipped.`);
-        res.status(200).json({ received: true, alreadyProcessed: true });
+    try {
+      const found = await PostgresDatabase.findTransactionBySaspayId(data.id);
+      if (!found) {
+        console.warn(JSON.stringify({ event: 'saspay.webhook_transaction_not_found', diagnosticId, paymentId: data.id }));
+        res.status(503).json({ error: 'Transaction non encore disponible.', diagnosticId });
         return;
       }
 
-      if (found.transaction.status === 'pending') {
-        const addedAmount = Number(found.transaction.amount) || Number(data.net_amount || data.amount) || 0;
-        const newBalance = Math.round(((found.user.balance || 0) + addedAmount) * 100) / 100;
-
-        UserDatabase.update(found.user.id, {
-          balance: newBalance,
-          isActivated: true,
-        });
-
-        UserDatabase.updateTransaction(found.user.id, data.id, {
-          status: 'success',
-          completedAt: new Date().toISOString(),
-        });
-
-        if (isDatabaseConfigured()) {
-          try {
-            await PostgresDatabase.updateBalance(found.user.id, newBalance, true);
-            await PostgresDatabase.updateTransactionStatus(data.id, 'success');
-          } catch (err: any) {
-            console.error(JSON.stringify({
-              event: 'saspay.webhook_balance_persistence_failed',
-              diagnosticId,
-              paymentId: data.id,
-              userId: found.user.id,
-              errorName: err?.name || 'Error',
-              errorMessage: err?.message || String(err),
-              stack: err?.stack,
-            }));
+      if (event === 'transaction.success') {
+        const settled = await settleVerifiedDeposit(data.id, diagnosticId);
+        if (!settled?.verification.success) {
+          res.status(503).json({ error: settled?.verification.message || 'Vérification SasPay temporairement indisponible.', diagnosticId });
+          return;
+        }
+        if (settled.verification.status !== 'SUCCESS') {
+          if (settled.verification.status === 'FAILED' || settled.verification.status === 'CANCELLED') {
+            await PostgresDatabase.markDepositFailed(data.id);
           }
+          res.status(200).json({ received: true, status: settled.verification.status });
+          return;
         }
-        console.log(`[SasPay Webhook] Account ${found.user.id} credited with +${addedAmount} FCFA`);
+        if (!settled.result) {
+          res.status(409).json({ error: 'Règlement suspendu : les montants ou devises ne correspondent pas.', diagnosticId });
+          return;
+        }
+        res.status(200).json({ received: true, credited: settled.result.credited });
+        return;
+      }
 
-        // Send transaction receipt email
-        sendDepositInvoiceEmail(found.user, { ...found.transaction, amount: addedAmount }, newBalance);
-      }
-    }
-  } else if (event === 'transaction.failed' && data?.id) {
-    const found = UserDatabase.findBySaspayPaymentId(data.id);
-    if (found) {
-      UserDatabase.updateTransaction(found.user.id, data.id, {
-        status: 'failed',
-      });
-      if (isDatabaseConfigured()) {
-        try {
-          await PostgresDatabase.updateTransactionStatus(data.id, 'failed');
-        } catch (err: any) {
-          console.error(JSON.stringify({
-            event: 'saspay.webhook_failure_status_persistence_failed',
-            diagnosticId,
-            paymentId: data.id,
-            userId: found.user.id,
-            errorName: err?.name || 'Error',
-            errorMessage: err?.message || String(err),
-            stack: err?.stack,
-          }));
-        }
-      }
-    }
+      await PostgresDatabase.markDepositFailed(data.id);
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: 'saspay.webhook_settlement_failed',
+      diagnosticId,
+      paymentId: data?.id,
+      errorName: error instanceof Error ? error.name : 'Error',
+      errorMessage: error instanceof Error ? error.message : String(error),
+    }));
+    res.status(503).json({ error: 'Échec du traitement du webhook.', diagnosticId });
+    return;
+  }
   }
 
   res.status(200).json({ received: true });
@@ -1478,6 +1662,13 @@ const handleActivate = async (req: Request, res: Response): Promise<void> => {
   const decoded = authenticateToken(req);
   if (!decoded) {
     res.status(401).json({ success: false, message: 'Non autorisé.' });
+    return;
+  }
+  if (!REAL_MONEY_GAME_ENABLED) {
+    res.status(503).json({
+      success: false,
+      message: 'Les bonus et l’activation monétaire sont suspendus avec le jeu en argent réel.',
+    });
     return;
   }
 
@@ -1577,6 +1768,13 @@ const handleBet = async (req: Request, res: Response): Promise<void> => {
   const { bet } = req.body;
   if (!bet) {
     res.status(400).json({ success: false, message: 'Données du pari manquantes.' });
+    return;
+  }
+  if (!REAL_MONEY_GAME_ENABLED && bet.gameMode !== 'demo') {
+    res.status(503).json({
+      success: false,
+      message: 'Les manches en argent réel sont suspendues jusqu’à leur règlement côté serveur.',
+    });
     return;
   }
 

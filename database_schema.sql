@@ -61,6 +61,22 @@ CREATE INDEX IF NOT EXISTS idx_transactions_status ON public.transactions(status
 CREATE INDEX IF NOT EXISTS idx_transactions_saspay_pay_id ON public.transactions(saspay_payment_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_created_at ON public.transactions(created_at DESC);
 
+-- Idempotency and exact settlement fields for money-moving operations.
+ALTER TABLE public.transactions
+  ADD COLUMN IF NOT EXISTS idempotency_key TEXT,
+  ADD COLUMN IF NOT EXISTS request_fingerprint TEXT,
+  ADD COLUMN IF NOT EXISTS credited_amount NUMERIC(14, 2);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_user_type_idempotency
+  ON public.transactions(user_id, type, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_saspay_payment_id_unique
+  ON public.transactions(saspay_payment_id)
+  WHERE saspay_payment_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_saspay_payout_id_unique
+  ON public.transactions(saspay_payout_id)
+  WHERE saspay_payout_id IS NOT NULL;
+
 -- 4. TABLE DES PARIS (Gameplay AeroCrash)
 CREATE TABLE IF NOT EXISTS public.bets (
   id TEXT PRIMARY KEY DEFAULT ('bet_' || substr(md5(random()::text), 1, 12)),
