@@ -1,6 +1,5 @@
 import dns from 'node:dns/promises';
 import { createHmac, randomUUID } from 'node:crypto';
-import nodemailer from 'nodemailer';
 import { isDatabaseConfigured, PostgresDatabase } from './database.js';
 
 // In-memory OTP storage with TTL (10 minutes)
@@ -96,9 +95,9 @@ type TransactionalEmailPayload = {
 };
 
 type EmailSendResult = { success: boolean; messageId?: string; error?: string; diagnosticId?: string };
-type GmailTransporter = ReturnType<typeof nodemailer.createTransport>;
 
-let gmailTransporter: GmailTransporter | null = null;
+const BREVO_API_URL = 'https://api.brevo.com/v3/smtp/email';
+const BREVO_NOT_CONFIGURED = 'Configure BREVO_API_KEY and BREVO_SENDER_EMAIL to send email through Brevo.';
 
 function redactEmailAddresses(message: string): string {
   return message.replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[redacted-email]');
@@ -117,46 +116,61 @@ function getEmailErrorDetails(error: unknown): { errorName: string; errorMessage
   };
 }
 
-async function sendWithGmail(payload: TransactionalEmailPayload, diagnosticId: string): Promise<EmailSendResult> {
-  const user = (process.env.GMAIL_USER || '').trim();
-  const pass = (process.env.GMAIL_APP_PASSWORD || '').replace(/\s/g, '');
-  const senderName = (process.env.GMAIL_FROM_NAME || 'AeroCrash').trim();
+function isBrevoConfigured(): boolean {
+  return Boolean(process.env.BREVO_API_KEY?.trim() && process.env.BREVO_SENDER_EMAIL?.trim());
+}
 
-  if (!user || !pass) {
-    return {
-      success: false,
-      error: 'Configure GMAIL_USER and GMAIL_APP_PASSWORD to send email through Gmail.',
-    };
+// Brevo's HTTPS API is used instead of SMTP because Render free instances block outbound SMTP ports.
+async function sendWithBrevo(payload: TransactionalEmailPayload, diagnosticId: string): Promise<EmailSendResult> {
+  const apiKey = (process.env.BREVO_API_KEY || '').trim();
+  const senderEmail = (process.env.BREVO_SENDER_EMAIL || '').trim();
+  const senderName = (process.env.BREVO_SENDER_NAME || 'AeroCrash').trim();
+
+  if (!apiKey || !senderEmail) {
+    return { success: false, error: BREVO_NOT_CONFIGURED };
   }
 
-  gmailTransporter ??= nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
-    auth: { user, pass },
-    connectionTimeout: 15_000,
-    greetingTimeout: 15_000,
-    socketTimeout: 20_000,
-  });
-
   try {
-    const result = await gmailTransporter.sendMail({
-      from: { name: senderName, address: user },
-      to: payload.toName
-        ? { name: payload.toName, address: payload.toEmail.trim() }
-        : payload.toEmail.trim(),
-      subject: payload.subject,
-      html: payload.htmlContent,
+    const response = await fetch(BREVO_API_URL, {
+      method: 'POST',
+      headers: {
+        'api-key': apiKey,
+        'content-type': 'application/json',
+        accept: 'application/json',
+      },
+      body: JSON.stringify({
+        sender: { name: senderName, email: senderEmail },
+        to: [payload.toName
+          ? { email: payload.toEmail.trim(), name: payload.toName }
+          : { email: payload.toEmail.trim() }],
+        subject: payload.subject,
+        htmlContent: payload.htmlContent,
+      }),
+      signal: AbortSignal.timeout(20_000),
     });
-    return { success: true, messageId: result.messageId };
+
+    const body: any = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = `Brevo HTTP ${response.status}: ${body?.code || ''} ${body?.message || ''}`.trim();
+      console.error(JSON.stringify({
+        event: 'email.provider_failed',
+        diagnosticId,
+        provider: 'brevo_api',
+        status: response.status,
+        errorMessage: redactEmailAddresses(error),
+      }));
+      return { success: false, error };
+    }
+
+    return { success: true, messageId: body?.messageId };
   } catch (err: any) {
     console.error(JSON.stringify({
       event: 'email.provider_failed',
       diagnosticId,
-      provider: 'Gmail SMTP',
+      provider: 'brevo_api',
       ...getEmailErrorDetails(err),
     }));
-    return { success: false, error: err?.message || 'Erreur SMTP Gmail' };
+    return { success: false, error: err?.message || 'Erreur API Brevo' };
   }
 }
 
@@ -164,43 +178,36 @@ export async function sendTransactionalEmail(
   payload: TransactionalEmailPayload,
 ): Promise<EmailSendResult> {
   const diagnosticId = randomUUID();
-  const gmailConfigured = Boolean(
-    process.env.GMAIL_USER?.trim()
-      && process.env.GMAIL_APP_PASSWORD?.trim(),
-  );
+  const brevoConfigured = isBrevoConfigured();
 
-  if (!gmailConfigured && process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+  if (!brevoConfigured && process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
     console.log(`[Email Simulation] To: ${payload.toEmail} | Subject: "${payload.subject}"`);
     return { success: true, messageId: 'simulated_' + Date.now(), diagnosticId };
   }
 
-  if (!gmailConfigured) {
+  if (!brevoConfigured) {
     console.error(JSON.stringify({
       event: 'email.no_provider_configured',
       diagnosticId,
-      provider: 'gmail_smtp',
-      usernameConfigured: Boolean(process.env.GMAIL_USER?.trim()),
-      appPasswordConfigured: Boolean(process.env.GMAIL_APP_PASSWORD?.trim()),
+      provider: 'brevo_api',
+      apiKeyConfigured: Boolean(process.env.BREVO_API_KEY?.trim()),
+      senderConfigured: Boolean(process.env.BREVO_SENDER_EMAIL?.trim()),
     }));
-    return {
-      success: false,
-      error: 'Configure GMAIL_USER and GMAIL_APP_PASSWORD to send email through Gmail.',
-      diagnosticId,
-    };
+    return { success: false, error: BREVO_NOT_CONFIGURED, diagnosticId };
   }
 
-  console.info(JSON.stringify({ event: 'email.provider_attempt', diagnosticId, provider: 'gmail_smtp' }));
-  const result = await sendWithGmail(payload, diagnosticId);
+  console.info(JSON.stringify({ event: 'email.provider_attempt', diagnosticId, provider: 'brevo_api' }));
+  const result = await sendWithBrevo(payload, diagnosticId);
   if (result.success) {
-    console.info(JSON.stringify({ event: 'email.delivered', diagnosticId, provider: 'gmail_smtp' }));
+    console.info(JSON.stringify({ event: 'email.delivered', diagnosticId, provider: 'brevo_api' }));
     return { ...result, diagnosticId };
   }
 
-  const error = result.error || 'Gmail SMTP email delivery failed.';
+  const error = result.error || 'Brevo email delivery failed.';
   console.error(JSON.stringify({
     event: 'email.delivery_failed',
     diagnosticId,
-    provider: 'gmail_smtp',
+    provider: 'brevo_api',
     error: redactEmailAddresses(error),
   }));
   return { success: false, error, diagnosticId };

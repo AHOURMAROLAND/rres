@@ -21,12 +21,12 @@ services:
       - key: VITE_REGISTRATION_ENABLED
         value: "false"
       - key: APP_URL
-        value: https://rres.onrender.com
-      - key: GMAIL_USER
+        value: https://aerocrash.onrender.com
+      - key: BREVO_API_KEY
         sync: false
-      - key: GMAIL_APP_PASSWORD
+      - key: BREVO_SENDER_EMAIL
         sync: false
-      - key: GMAIL_FROM_NAME
+      - key: BREVO_SENDER_NAME
         value: AeroCrash
       - key: SASPAY_API_URL
         value: https://api.saspay.me/api/v1
